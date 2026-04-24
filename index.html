@@ -457,8 +457,8 @@
   </div>
 
   <div class="sidebar-footer">
-    <a href="https://github.com/bitmetric-bv/qvd-viewer" target="_blank" rel="noopener">github.com/bitmetric-bv/qvd-viewer</a>
-    <div class="footer-date">Last updated: Apr 2025</div>
+    <a href="https://github.com/bitmetric-bv/local-qvd-viewer" target="_blank" rel="noopener">github.com/bitmetric-bv/local-qvd-viewer</a>
+    <div class="footer-date">Last updated: Apr 24, 2026 11:25</div>
   </div>
 </div>
 
@@ -565,8 +565,9 @@ self.onmessage = function(e) {
   try {
     var result = parseQvd(buf);
     // Transfer Int32Array buffers (zero-copy) to avoid postMessage OOM on large files
-    var transferables = result.colIndices.map(function(a) { return a.buffer; });
-    self.postMessage({ type: 'done', symbols: result.symbols, colIndices: result.colIndices, fields: result.fields, meta: result.meta }, transferables);
+    var transferables = result.colIndices.map(function(a) { return a.buffer; })
+                   .concat(result.symCounts.map(function(a) { return a.buffer; }));
+    self.postMessage({ type: 'done', symbols: result.symbols, colIndices: result.colIndices, symCounts: result.symCounts, fields: result.fields, meta: result.meta }, transferables);
   } catch(err) {
     self.postMessage({ type: 'error', message: err.message });
   }
@@ -671,6 +672,8 @@ function parseQvd(buffer) {
 
   // One Int32Array per field — transferable, no clone needed on postMessage
   var colIndices = fields.map(function() { return new Int32Array(noOfRecords); });
+  // symCounts[fi][si] = number of rows with symbol index si; last slot = out-of-range (empty)
+  var symCounts  = fields.map(function(f) { return new Int32Array(f.noOfSymbols + 1); });
   var reportEvery = Math.max(1, Math.floor(noOfRecords / 80));
 
   for (var r = 0; r < noOfRecords; r++) {
@@ -683,7 +686,10 @@ function parseQvd(buffer) {
         var abs = field.bitOffset + b;
         if (u8[rOff + (abs >> 3)] & (1 << (abs & 7))) idx |= (1 << b);
       }
-      colIndices[fi][r] = idx + field.bias; // resolved symbol index; negative = null/empty
+      var si = idx + field.bias; // resolved symbol index; negative = null/empty
+      colIndices[fi][r] = si;
+      var cnt = symCounts[fi];
+      if (si >= 0 && si < cnt.length - 1) cnt[si]++; else cnt[cnt.length - 1]++;
     }
 
     if (r % reportEvery === 0) {
@@ -696,6 +702,7 @@ function parseQvd(buffer) {
   return {
     symbols:    allSymbols,
     colIndices: colIndices,
+    symCounts:  symCounts,
     fields:     fields.map(function(f, fi) { return { name: f.name, numeric: isNumeric[fi] }; }),
     meta:       { noOfRecords: noOfRecords, noOfFields: fields.length, createdUtc: createdUtc },
   };
@@ -811,7 +818,7 @@ function startWorker(buffer) {
     } else if (d.type === 'done') {
       showProgress(false);
       S.worker = null;
-      onParsed(d.symbols, d.colIndices, d.fields, d.meta);
+      onParsed(d.symbols, d.colIndices, d.symCounts, d.fields, d.meta);
     } else if (d.type === 'error') {
       showProgress(false);
       S.worker = null;
@@ -827,13 +834,12 @@ function startWorker(buffer) {
   S.worker.postMessage({ buffer }, [buffer]);
 }
 
-function onParsed(symbols, colIndices, fields, meta) {
+function onParsed(symbols, colIndices, symCounts, fields, meta) {
   S.symbols      = symbols;
   S.colIndices   = colIndices;
   S.fields       = fields;
   S.allCount     = meta.noOfRecords;
   S.colFilters   = {};
-  S.uniqueValues = {};
   S.pinnedAgg    = {};
   S.globalSearch = '';
   S.sortField    = null;
@@ -842,6 +848,26 @@ function onParsed(symbols, colIndices, fields, meta) {
   // Build name → index map
   S.fieldIndex = {};
   fields.forEach((f, fi) => { S.fieldIndex[f.name] = fi; });
+
+  // Pre-build uniqueValues from symCounts (O(K) per field, not O(N))
+  // This eliminates the freeze when opening a filter dropdown for the first time.
+  S.uniqueValues = {};
+  fields.forEach((f, fi) => {
+    const syms    = symbols[fi];
+    const counts  = symCounts[fi];
+    const n       = syms.length;
+    const entries = [];
+    for (let si = 0; si < n; si++) {
+      if (counts[si] > 0) entries.push([syms[si] == null ? '' : String(syms[si]), counts[si]]);
+    }
+    if (counts[n] > 0) entries.push(['', counts[n]]); // out-of-range rows → empty string
+    if (f.numeric) {
+      entries.sort((a, b) => { const an = parseFloat(a[0]), bn = parseFloat(b[0]); return isNaN(an) ? 1 : isNaN(bn) ? -1 : an - bn; });
+    } else {
+      entries.sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+    }
+    S.uniqueValues[f.name] = entries;
+  });
 
   // Precompute all-row index array (used as base for filtering)
   S.allIndices = Array.from({ length: meta.noOfRecords }, (_, i) => i);
@@ -884,70 +910,108 @@ function setEnabled(on) {
 // Filter pipeline
 // ════════════════════════════════════════════════════════════════
 let filterTimer = null;
+let filterJob   = null; // cancellation token for async filter
 
 function scheduleFilter() {
   clearTimeout(filterTimer);
   filterTimer = setTimeout(applyFilters, 200);
 }
 
-function applyFilters() {
-  const gs  = S.globalSearch.toLowerCase();
-  const vf  = S.visibleFields;
-  const vfIdx = vf.map(fname => S.fieldIndex[fname]);
+// Pre-build a rank lookup for a field so sort comparisons are integer ops, not string ops.
+function buildRank(sfi) {
+  const syms  = S.symbols[sfi];
+  const isNum = S.fields[sfi] && S.fields[sfi].numeric;
+  const n     = syms.length;
+  const order = Array.from({ length: n }, (_, i) => i);
+  order.sort((a, b) => {
+    if (isNum) {
+      const an = +syms[a], bn = +syms[b];
+      return isNaN(an) ? 1 : isNaN(bn) ? -1 : an - bn;
+    }
+    const sa = String(syms[a] ?? '').toLowerCase();
+    const sb = String(syms[b] ?? '').toLowerCase();
+    return sa < sb ? -1 : sa > sb ? 1 : 0;
+  });
+  const rank = new Int32Array(n + 1).fill(n); // n = rank for null/out-of-range
+  order.forEach((si, r) => { rank[si] = r; });
+  return rank;
+}
 
+function applyFilters() {
+  // Cancel any in-progress async filter
+  if (filterJob) { filterJob.cancelled = true; filterJob = null; }
+
+  const gs           = S.globalSearch.toLowerCase();
+  const vf           = S.visibleFields;
+  const vfIdx        = vf.map(fname => S.fieldIndex[fname]);
   const activeFields = Object.keys(S.colFilters).filter(f => S.colFilters[f]);
   const activeFi     = activeFields.map(f => S.fieldIndex[f]);
+  const activeSel    = activeFields.map(f => S.colFilters[f]);
+  const needSort     = !!(S.sortField && S.sortDir !== 0);
 
-  let indices = S.allIndices;
+  // Fast path: nothing to filter or sort
+  if (!gs && !activeFields.length && !needSort) {
+    S.filteredIndices = S.allIndices;
+    updateKpis();
+    renderTable();
+    if (spField) refreshStatsPopup();
+    return;
+  }
 
-  // Global search across visible fields
-  if (gs) {
-    indices = indices.filter(rowIdx => {
+  function rowPasses(rowIdx) {
+    if (gs) {
+      let found = false;
       for (let i = 0; i < vfIdx.length; i++) {
         const v = getVal(rowIdx, vfIdx[i]);
-        if (v !== '' && v != null && String(v).toLowerCase().includes(gs)) return true;
+        if (v !== '' && v != null && String(v).toLowerCase().includes(gs)) { found = true; break; }
       }
-      return false;
-    });
+      if (!found) return false;
+    }
+    for (let i = 0; i < activeFi.length; i++) {
+      const v = getVal(rowIdx, activeFi[i]);
+      const k = v == null ? '' : String(v);
+      if (!activeSel[i].has(k)) return false;
+    }
+    return true;
   }
 
-  // Per-column checkbox filters (AND)
-  if (activeFields.length) {
-    indices = indices.filter(rowIdx => {
-      for (let i = 0; i < activeFields.length; i++) {
-        const sel = S.colFilters[activeFields[i]];
-        const v   = getVal(rowIdx, activeFi[i]);
-        const k   = v == null ? '' : String(v);
-        if (!sel.has(k)) return false;
+  const job     = { cancelled: false };
+  filterJob     = job;
+  const results = [];
+  let   pos     = 0;
+
+  statusBar.textContent = 'Filtering…';
+
+  function tick() {
+    if (job.cancelled) return;
+    const t0 = performance.now();
+    // Process rows in ~10 ms slices so the browser stays responsive
+    while (pos < S.allCount && performance.now() - t0 < 10) {
+      if (rowPasses(pos)) results.push(pos);
+      pos++;
+    }
+    if (pos < S.allCount) {
+      setTimeout(tick, 0);
+    } else {
+      if (job.cancelled) return;
+      // Apply sort using integer rank comparisons (much faster than value string comparisons)
+      if (needSort) {
+        const sfi  = S.fieldIndex[S.sortField];
+        const dir  = S.sortDir;
+        const rank = buildRank(sfi);
+        const col  = S.colIndices[sfi];
+        const n    = S.symbols[sfi].length;
+        results.sort((a, b) => dir * (rank[col[a] >= 0 && col[a] < n ? col[a] : n] - rank[col[b] >= 0 && col[b] < n ? col[b] : n]));
       }
-      return true;
-    });
+      filterJob = null;
+      S.filteredIndices = results;
+      updateKpis();
+      renderTable();
+      if (spField) refreshStatsPopup();
+    }
   }
 
-  // Sort
-  if (S.sortField && S.sortDir !== 0) {
-    const sfi = S.fieldIndex[S.sortField];
-    const dir = S.sortDir;
-    const num = S.fields[sfi] && S.fields[sfi].numeric;
-    // .slice() when indices is still the shared allIndices reference
-    if (indices === S.allIndices) indices = indices.slice();
-    indices.sort((a, b) => {
-      let av = getVal(a, sfi), bv = getVal(b, sfi);
-      if (num) {
-        av = av === '' || av == null ? -Infinity : +av;
-        bv = bv === '' || bv == null ? -Infinity : +bv;
-        return dir * (av - bv);
-      }
-      av = av == null ? '' : String(av).toLowerCase();
-      bv = bv == null ? '' : String(bv).toLowerCase();
-      return dir * (av < bv ? -1 : av > bv ? 1 : 0);
-    });
-  }
-
-  S.filteredIndices = indices;
-  updateKpis();
-  renderTable();
-  if (spField) refreshStatsPopup();
+  tick();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1352,26 +1416,8 @@ let   fdField        = null;   // field whose dropdown is open
 let   fdAnchorBtn    = null;   // the filter icon button that opened it
 
 function getUniqueValues(fname) {
-  if (S.uniqueValues[fname]) return S.uniqueValues[fname];
-  const fi  = S.fieldIndex[fname];
-  const map = new Map();
-  for (let i = 0; i < S.allCount; i++) {
-    const v = getVal(i, fi);
-    const k = v == null ? '' : String(v);
-    map.set(k, (map.get(k) || 0) + 1);
-  }
-  const f       = S.fields[fi];
-  const entries = [...map.entries()];
-  if (f && f.numeric) {
-    entries.sort((a, b) => {
-      const an = parseFloat(a[0]), bn = parseFloat(b[0]);
-      return isNaN(an) ? 1 : isNaN(bn) ? -1 : an - bn;
-    });
-  } else {
-    entries.sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
-  }
-  S.uniqueValues[fname] = entries;
-  return entries;
+  // Pre-populated in onParsed from symCounts — always a cache hit
+  return S.uniqueValues[fname] || [];
 }
 
 function openFilterDropdown(fname, anchorBtn) {
