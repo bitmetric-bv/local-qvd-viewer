@@ -564,7 +564,9 @@ self.onmessage = function(e) {
   var buf = e.data.buffer;
   try {
     var result = parseQvd(buf);
-    self.postMessage({ type: 'done', rows: result.rows, fields: result.fields, meta: result.meta });
+    // Transfer Int32Array buffers (zero-copy) to avoid postMessage OOM on large files
+    var transferables = result.colIndices.map(function(a) { return a.buffer; });
+    self.postMessage({ type: 'done', symbols: result.symbols, colIndices: result.colIndices, fields: result.fields, meta: result.meta }, transferables);
   } catch(err) {
     self.postMessage({ type: 'error', message: err.message });
   }
@@ -665,15 +667,14 @@ function parseQvd(buffer) {
   var symTotal = fields.reduce(function(mx, f) { return Math.max(mx, f.offset + f.length); }, 0);
   var recBase  = symBase + symTotal;
 
-  // A field is numeric when at least one symbol had a numeric type byte (1,2,5,6).
   var isNumeric = fieldHasNumType;
 
-  var rows = new Array(noOfRecords);
+  // One Int32Array per field — transferable, no clone needed on postMessage
+  var colIndices = fields.map(function() { return new Int32Array(noOfRecords); });
   var reportEvery = Math.max(1, Math.floor(noOfRecords / 80));
 
   for (var r = 0; r < noOfRecords; r++) {
     var rOff = recBase + r * recordByteSize;
-    var row  = {};
 
     for (var fi = 0; fi < fields.length; fi++) {
       var field = fields[fi];
@@ -682,11 +683,8 @@ function parseQvd(buffer) {
         var abs = field.bitOffset + b;
         if (u8[rOff + (abs >> 3)] & (1 << (abs & 7))) idx |= (1 << b);
       }
-      var symIdx = idx + field.bias;
-      var syms   = allSymbols[fi];
-      row[field.name] = (symIdx >= 0 && symIdx < syms.length) ? syms[symIdx] : '';
+      colIndices[fi][r] = idx + field.bias; // resolved symbol index; negative = null/empty
     }
-    rows[r] = row;
 
     if (r % reportEvery === 0) {
       self.postMessage({ type: 'progress', pct: 20 + Math.round((r / noOfRecords) * 78) });
@@ -696,9 +694,10 @@ function parseQvd(buffer) {
   self.postMessage({ type: 'progress', pct: 100 });
 
   return {
-    rows:   rows,
-    fields: fields.map(function(f, fi) { return { name: f.name, numeric: isNumeric[fi] }; }),
-    meta:   { noOfRecords: noOfRecords, noOfFields: fields.length, createdUtc: createdUtc },
+    symbols:    allSymbols,
+    colIndices: colIndices,
+    fields:     fields.map(function(f, fi) { return { name: f.name, numeric: isNumeric[fi] }; }),
+    meta:       { noOfRecords: noOfRecords, noOfFields: fields.length, createdUtc: createdUtc },
   };
 }
 `;
@@ -707,19 +706,30 @@ function parseQvd(buffer) {
 // App state
 // ════════════════════════════════════════════════════════════════
 const S = {
-  allRows:       [],      // all parsed rows
-  filteredRows:  [],      // after filters
-  fields:        [],      // [{ name, numeric }]
-  visibleFields: [],      // names of visible columns
-  colWidths:     {},      // field name → width px
-  colFilters:    {},      // field name → Set of selected values (undefined = no filter)
-  uniqueValues:  {},      // field name → [[strVal, count], ...] (lazy)
-  pinnedAgg:     {},      // field name → 'count'|'sum'|'avg'|'min'|'max'
-  globalSearch:  '',
-  sortField:     null,
-  sortDir:       0,       // 0=none 1=asc -1=desc
-  worker:        null,
+  symbols:         [],    // [fi] → array of unique values for field fi
+  colIndices:      [],    // [fi] → Int32Array(noOfRecords) of resolved symbol indices
+  fields:          [],    // [{ name, numeric }]
+  fieldIndex:      {},    // field name → fi
+  allCount:        0,     // total row count
+  allIndices:      [],    // [0, 1, 2, ..., allCount-1]
+  filteredIndices: [],    // row indices after filters/sort
+  visibleFields:   [],    // names of visible columns
+  colWidths:       {},    // field name → width px
+  colFilters:      {},    // field name → Set of selected values (undefined = no filter)
+  uniqueValues:    {},    // field name → [[strVal, count], ...] (lazy)
+  pinnedAgg:       {},    // field name → 'count'|'sum'|'avg'|'min'|'max'
+  globalSearch:    '',
+  sortField:       null,
+  sortDir:         0,     // 0=none 1=asc -1=desc
+  worker:          null,
 };
+
+// Look up the value for a given row index and field index
+function getVal(rowIdx, fi) {
+  const syms = S.symbols[fi];
+  const idx  = S.colIndices[fi][rowIdx];
+  return (idx >= 0 && idx < syms.length) ? syms[idx] : '';
+}
 
 const ROW_H  = 37;   // virtual row height px
 const OVER   = 30;   // overscan rows
@@ -801,7 +811,7 @@ function startWorker(buffer) {
     } else if (d.type === 'done') {
       showProgress(false);
       S.worker = null;
-      onParsed(d.rows, d.fields, d.meta);
+      onParsed(d.symbols, d.colIndices, d.fields, d.meta);
     } else if (d.type === 'error') {
       showProgress(false);
       S.worker = null;
@@ -817,14 +827,24 @@ function startWorker(buffer) {
   S.worker.postMessage({ buffer }, [buffer]);
 }
 
-function onParsed(rows, fields, meta) {
-  S.allRows      = rows;
+function onParsed(symbols, colIndices, fields, meta) {
+  S.symbols      = symbols;
+  S.colIndices   = colIndices;
   S.fields       = fields;
+  S.allCount     = meta.noOfRecords;
   S.colFilters   = {};
   S.uniqueValues = {};
   S.pinnedAgg    = {};
   S.globalSearch = '';
-  S.sortField = null; S.sortDir = 0;
+  S.sortField    = null;
+  S.sortDir      = 0;
+
+  // Build name → index map
+  S.fieldIndex = {};
+  fields.forEach((f, fi) => { S.fieldIndex[f.name] = fi; });
+
+  // Precompute all-row index array (used as base for filtering)
+  S.allIndices = Array.from({ length: meta.noOfRecords }, (_, i) => i);
 
   // Default visible: first 20 columns
   S.visibleFields = fields.slice(0, 20).map(f => f.name);
@@ -871,30 +891,33 @@ function scheduleFilter() {
 }
 
 function applyFilters() {
-  const gs = S.globalSearch.toLowerCase();
-  const vf = S.visibleFields;
+  const gs  = S.globalSearch.toLowerCase();
+  const vf  = S.visibleFields;
+  const vfIdx = vf.map(fname => S.fieldIndex[fname]);
 
-  let rows = S.allRows;
+  const activeFields = Object.keys(S.colFilters).filter(f => S.colFilters[f]);
+  const activeFi     = activeFields.map(f => S.fieldIndex[f]);
+
+  let indices = S.allIndices;
 
   // Global search across visible fields
   if (gs) {
-    rows = rows.filter(row => {
-      for (let i = 0; i < vf.length; i++) {
-        const v = row[vf[i]];
-        if (v !== null && v !== undefined && String(v).toLowerCase().includes(gs)) return true;
+    indices = indices.filter(rowIdx => {
+      for (let i = 0; i < vfIdx.length; i++) {
+        const v = getVal(rowIdx, vfIdx[i]);
+        if (v !== '' && v != null && String(v).toLowerCase().includes(gs)) return true;
       }
       return false;
     });
   }
 
-  // Per-column checkbox filters (AND) — each colFilters[f] is a Set of selected string values
-  const activeFields = Object.keys(S.colFilters).filter(f => S.colFilters[f]);
+  // Per-column checkbox filters (AND)
   if (activeFields.length) {
-    rows = rows.filter(row => {
+    indices = indices.filter(rowIdx => {
       for (let i = 0; i < activeFields.length; i++) {
-        const f   = activeFields[i];
-        const sel = S.colFilters[f];
-        const k   = row[f] == null ? '' : String(row[f]);
+        const sel = S.colFilters[activeFields[i]];
+        const v   = getVal(rowIdx, activeFi[i]);
+        const k   = v == null ? '' : String(v);
         if (!sel.has(k)) return false;
       }
       return true;
@@ -903,12 +926,13 @@ function applyFilters() {
 
   // Sort
   if (S.sortField && S.sortDir !== 0) {
-    const sf  = S.sortField;
+    const sfi = S.fieldIndex[S.sortField];
     const dir = S.sortDir;
-    const fi  = S.fields.find(f => f.name === sf);
-    const num = fi && fi.numeric;
-    rows = rows.slice().sort((a, b) => {
-      let av = a[sf], bv = b[sf];
+    const num = S.fields[sfi] && S.fields[sfi].numeric;
+    // .slice() when indices is still the shared allIndices reference
+    if (indices === S.allIndices) indices = indices.slice();
+    indices.sort((a, b) => {
+      let av = getVal(a, sfi), bv = getVal(b, sfi);
       if (num) {
         av = av === '' || av == null ? -Infinity : +av;
         bv = bv === '' || bv == null ? -Infinity : +bv;
@@ -920,7 +944,7 @@ function applyFilters() {
     });
   }
 
-  S.filteredRows = rows;
+  S.filteredIndices = indices;
   updateKpis();
   renderTable();
   if (spField) refreshStatsPopup();
@@ -930,8 +954,8 @@ function applyFilters() {
 // KPIs & status
 // ════════════════════════════════════════════════════════════════
 function updateKpis() {
-  const total   = S.allRows.length;
-  const visible = S.filteredRows.length;
+  const total   = S.allCount;
+  const visible = S.filteredIndices.length;
   const cols    = S.visibleFields.length;
   const fields  = S.fields.length;
 
@@ -1047,9 +1071,10 @@ function renderTable() {
 }
 
 function renderVisibleRows() {
-  const total  = S.filteredRows.length;
+  const total  = S.filteredIndices.length;
   const vf     = S.visibleFields;
   const cc     = vf.length;
+  const vfIdx  = vf.map(fname => S.fieldIndex[fname]);
 
   const headH  = headersRow.offsetHeight || 38;
   const viewH  = tableWrap.clientHeight - headH;
@@ -1065,7 +1090,7 @@ function renderVisibleRows() {
   }
 
   for (let i = startIdx; i < endIdx; i++) {
-    frag.appendChild(buildRow(S.filteredRows[i], vf));
+    frag.appendChild(buildRow(S.filteredIndices[i], vf, vfIdx));
   }
 
   if (endIdx < total) {
@@ -1076,14 +1101,13 @@ function renderVisibleRows() {
   tbody.appendChild(frag);
 }
 
-function buildRow(row, vf) {
+function buildRow(rowIdx, vf, vfIdx) {
   const tr = document.createElement('tr');
   for (let i = 0; i < vf.length; i++) {
-    const fname = vf[i];
-    const val   = row[fname];
-    const td    = document.createElement('td');
-    const fi    = S.fields.find(f => f.name === fname);
-    if (fi && fi.numeric && val !== '' && val != null) {
+    const fi  = vfIdx[i];
+    const val = getVal(rowIdx, fi);
+    const td  = document.createElement('td');
+    if (S.fields[fi] && S.fields[fi].numeric && val !== '' && val != null) {
       td.className = 'num';
     }
     td.textContent = val == null ? '' : val;
@@ -1167,10 +1191,11 @@ function parseStatNum(v) {
   return s === '' ? NaN : +s;
 }
 
-function computeStats(fname, rows) {
+function computeStats(fname, rowIndices) {
+  const fi = S.fieldIndex[fname];
   let count = 0, sum = 0, min = Infinity, max = -Infinity;
-  for (let i = 0; i < rows.length; i++) {
-    const v = rows[i][fname];
+  for (let i = 0; i < rowIndices.length; i++) {
+    const v = getVal(rowIndices[i], fi);
     const n = parseStatNum(v);
     if (isNaN(n)) continue;
     count++;
@@ -1223,7 +1248,7 @@ function closeStatsPopup() {
 
 function refreshStatsPopup() {
   if (!spField) return;
-  const stats = computeStats(spField, S.filteredRows);
+  const stats = computeStats(spField, S.filteredIndices);
   $('spTitle').textContent = spField;
   const body = $('spBody');
   body.innerHTML = '';
@@ -1277,7 +1302,7 @@ function renderPinnedRow() {
     const th  = document.createElement('th');
     const agg = S.pinnedAgg[fname];
     if (agg) {
-      const stats = computeStats(fname, S.filteredRows);
+      const stats = computeStats(fname, S.filteredIndices);
       const def   = AGG_DEFS.find(d => d.key === agg);
       th.classList.add('has-pin');
       th.title = 'Klik om los te maken';
@@ -1328,15 +1353,16 @@ let   fdAnchorBtn    = null;   // the filter icon button that opened it
 
 function getUniqueValues(fname) {
   if (S.uniqueValues[fname]) return S.uniqueValues[fname];
+  const fi  = S.fieldIndex[fname];
   const map = new Map();
-  for (let i = 0; i < S.allRows.length; i++) {
-    const v = S.allRows[i][fname];
+  for (let i = 0; i < S.allCount; i++) {
+    const v = getVal(i, fi);
     const k = v == null ? '' : String(v);
     map.set(k, (map.get(k) || 0) + 1);
   }
-  const fi = S.fields.find(f => f.name === fname);
+  const f       = S.fields[fi];
   const entries = [...map.entries()];
-  if (fi && fi.numeric) {
+  if (f && f.numeric) {
     entries.sort((a, b) => {
       const an = parseFloat(a[0]), bn = parseFloat(b[0]);
       return isNaN(an) ? 1 : isNaN(bn) ? -1 : an - bn;
@@ -1608,11 +1634,13 @@ function csvEscape(v) {
 }
 
 btnExport.addEventListener('click', () => {
-  const vf = S.visibleFields;
-  const rows = S.filteredRows;
+  const vf    = S.visibleFields;
+  const vfIdx = vf.map(fname => S.fieldIndex[fname]);
+  const idxs  = S.filteredIndices;
   let csv = vf.map(csvEscape).join(',') + '\n';
-  for (let i = 0; i < rows.length; i++) {
-    csv += vf.map(f => csvEscape(rows[i][f])).join(',') + '\n';
+  for (let i = 0; i < idxs.length; i++) {
+    const rowIdx = idxs[i];
+    csv += vfIdx.map(fi => csvEscape(getVal(rowIdx, fi))).join(',') + '\n';
   }
   const link = document.createElement('a');
   link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
@@ -1635,7 +1663,7 @@ function showProgress(visible, label, pct) {
 
 // Re-render on window resize (virtual scroll dimensions change)
 window.addEventListener('resize', () => {
-  if (S.filteredRows.length) renderVisibleRows();
+  if (S.filteredIndices.length) renderVisibleRows();
 });
 </script>
 </body>
