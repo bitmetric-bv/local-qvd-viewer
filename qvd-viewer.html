@@ -1,0 +1,1642 @@
+<!--
+  ════════════════════════════════════════════════════════════════════════════
+  QVD BINARY FORMAT  —  Parser notes for maintainers
+  ════════════════════════════════════════════════════════════════════════════
+
+  A QVD file is divided into three contiguous sections:
+
+    [ XML header (UTF-8) ] [ 0x00 ] [ Symbol tables ] [ Record data ]
+
+  ── 1. XML Header ────────────────────────────────────────────────────────
+  Everything before the first null byte (0x00) is a UTF-8 XML document
+  whose root element is <QvdTableHeader>.  Key child elements:
+
+    <NoOfRecords>     — total row count
+    <RecordByteSize>  — bytes per row in the record section
+    <CreatedUtcTime>  — ISO-8601 creation timestamp
+    <Fields>          — contains one <QvdFieldHeader> per column:
+      <FieldName>     — column name (string)
+      <BitOffset>     — bit position of this field's index within a row
+      <BitWidth>      — number of bits used for the packed index
+      <Bias>          — added to the raw bit value → symbol table index
+      <NoOfSymbols>   — number of symbols in this field's table
+      <Offset>        — byte offset of symbol data from symBase
+      <Length>        — byte length of symbol data
+
+  ── 2. Symbol Tables ─────────────────────────────────────────────────────
+  Starts at byte offset (xmlLen + 1).  Each field's symbol block starts at
+  symBase + field.Offset and is exactly field.Length bytes long.
+
+  Each symbol is prefixed with a 1-byte type tag:
+    0x01  — 4-byte little-endian int32
+    0x02  — 8-byte little-endian IEEE-754 float64
+    0x04  — null-terminated UTF-8 string
+    0x05  — dual: 4-byte int32 THEN null-terminated string  (use string)
+    0x06  — dual: 8-byte float64 THEN null-terminated string (use string)
+
+  ── 3. Record Data ───────────────────────────────────────────────────────
+  Starts at symBase + max(field.Offset + field.Length) across all fields.
+  Each row occupies exactly RecordByteSize bytes.
+
+  Fields are bit-packed LSB-first within each byte.  To decode field i
+  from row r:
+
+    byteStart = recBase + r * recordByteSize
+    Extract bits [BitOffset … BitOffset+BitWidth-1] from the row bytes
+    symbolIndex = extractedBits + field.Bias
+    value = symbolTable[symbolIndex]   (empty string when out of range)
+
+  ════════════════════════════════════════════════════════════════════════════
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QVD Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; width: 100%; overflow: hidden; }
+    body {
+      display: flex;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      color: #333;
+      background: #f5f5f5;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 240px; min-width: 240px;
+      background: #1a1a2e; color: #e0e0e0;
+      padding: 20px; display: flex; flex-direction: column; gap: 16px;
+      overflow-y: auto; border-right: 1px solid #2a2a4a; flex-shrink: 0;
+    }
+    .sidebar h1 { font-size: 16px; font-weight: 700; color: #fff; }
+    .sidebar .subtitle { font-size: 11px; color: #888; line-height: 1.4; margin-top: 3px; }
+    .sidebar-section-label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.6px; color: #888; margin-bottom: 6px;
+    }
+    .upload-zone {
+      border: 2px dashed #3a3a5c; border-radius: 6px; padding: 16px 12px;
+      text-align: center; cursor: pointer; transition: all 0.18s;
+    }
+    .upload-zone:hover { border-color: #6a6a9c; background: rgba(255,255,255,0.02); }
+    .upload-zone.dragover { border-color: #4caf50; background: rgba(76,175,80,0.08); }
+    .upload-zone input[type="file"] { display: none; }
+    .zone-icon { font-size: 22px; display: block; margin-bottom: 5px; }
+    .zone-label { font-size: 11px; color: #bbb; }
+    .file-name-display {
+      font-size: 11px; color: #4caf50; margin-top: 6px;
+      word-break: break-all; display: none;
+    }
+    .file-name-display.visible { display: block; }
+
+    /* Progress */
+    .progress-section { display: none; }
+    .progress-section.visible { display: block; }
+    .progress-label { font-size: 11px; color: #aaa; margin-bottom: 5px; }
+    .progress-track { height: 5px; background: #2a2a4a; border-radius: 3px; overflow: hidden; }
+    .progress-fill {
+      height: 100%; background: #4caf50; width: 0%;
+      transition: width 0.15s ease; border-radius: 3px;
+    }
+    .progress-pct { font-size: 10px; color: #555; margin-top: 3px; }
+
+    /* Metadata card */
+    .meta-card {
+      background: rgba(255,255,255,0.04); border: 1px solid #2a2a4a;
+      border-radius: 6px; padding: 12px; display: none;
+    }
+    .meta-card.visible { display: block; }
+    .meta-row {
+      display: flex; justify-content: space-between;
+      align-items: baseline; margin-bottom: 7px;
+    }
+    .meta-row:last-child { margin-bottom: 0; }
+    .meta-key { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+    .meta-val { font-size: 12px; color: #e0e0e0; font-weight: 500; max-width: 130px; text-align: right; word-break: break-all; }
+
+    /* Sidebar footer */
+    .sidebar-footer { margin-top: auto; padding-top: 12px; border-top: 1px solid #2a2a4a; }
+    .sidebar-footer a { font-size: 11px; color: #555; text-decoration: none; display: block; }
+    .sidebar-footer a:hover { color: #777; }
+    .footer-date { font-size: 10px; color: #444; margin-top: 3px; }
+
+    /* ── Main panel ── */
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* Stats bar */
+    .stats-bar {
+      background: white; border-bottom: 1px solid #e0e0e0;
+      padding: 14px 20px; display: flex; gap: 32px; flex-wrap: wrap; flex-shrink: 0;
+    }
+    .kpi { display: flex; flex-direction: column; gap: 2px; }
+    .kpi-label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.5px; color: #888;
+    }
+    .kpi-value {
+      font-size: 2rem; font-weight: 700; line-height: 1;
+      font-variant-numeric: tabular-nums; color: #2e7d32;
+    }
+    .kpi-value.orange { color: #e65100; }
+    .kpi-value.muted  { color: #bbb; }
+    .kpi-value.neutral { color: #333; }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex; gap: 8px; align-items: center;
+      padding: 10px 20px; background: white;
+      border-bottom: 1px solid #e0e0e0; flex-shrink: 0;
+    }
+    .search-global {
+      flex: 1; padding: 7px 11px; border: 1px solid #ddd; border-radius: 4px;
+      font-size: 13px; background: white; color: #333; font-family: inherit;
+    }
+    .search-global:focus { outline: none; border-color: #4caf50; }
+    .btn {
+      padding: 7px 13px; border-radius: 4px; font-size: 12px; font-weight: 600;
+      cursor: pointer; border: none; transition: background 0.15s;
+      font-family: inherit; white-space: nowrap;
+    }
+    .btn-dark { background: #1f1f1f; color: white; }
+    .btn-dark:hover { background: #333; }
+    .btn-outline { background: white; color: #555; border: 1px solid #d0d0d0; }
+    .btn-outline:hover { background: #f5f5f5; border-color: #999; }
+    .btn-outline.active { background: #1f1f1f; color: white; border-color: #1f1f1f; }
+
+    /* Table container */
+    .table-wrap { flex: 1; overflow: auto; background: white; position: relative; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+
+    thead { position: sticky; top: 0; z-index: 20; }
+
+    /* Header row */
+    .thead-headers th {
+      background: #f4f4f4; border-bottom: 1px solid #ddd;
+      border-right: 1px solid #e0e0e0; padding: 0;
+      position: relative; user-select: none; overflow: visible;
+    }
+    .thead-headers th:last-child { border-right: none; }
+    .th-inner {
+      display: flex; align-items: center; padding: 9px 22px 9px 12px;
+      cursor: pointer; min-height: 36px; gap: 4px;
+    }
+    .th-inner:hover { background: rgba(0,0,0,0.04); }
+    .th-name { font-size: 12px; font-weight: 600; color: #444; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .th-sort { font-size: 10px; color: #bbb; flex-shrink: 0; }
+    .th-sort.on { color: #333; }
+    .resize-handle {
+      position: absolute; right: 0; top: 0; bottom: 0; width: 6px;
+      cursor: col-resize; z-index: 1;
+    }
+    .resize-handle:hover { background: rgba(0,0,0,0.12); }
+    .resize-handle.dragging { background: #4caf50; }
+
+    /* Filter icon button inside column header */
+    .th-filter-btn {
+      flex-shrink: 0; padding: 2px 3px; border: none; background: none;
+      cursor: pointer; color: #ccc; border-radius: 3px;
+      line-height: 1; display: flex; align-items: center; justify-content: center;
+    }
+    .th-filter-btn:hover { background: rgba(0,0,0,0.08); color: #666; }
+    .th-filter-btn.active { color: #e65100; }
+    body.dark .th-filter-btn { color: #555; }
+    body.dark .th-filter-btn:hover { background: rgba(255,255,255,0.08); color: #aaa; }
+    body.dark .th-filter-btn.active { color: #e65100; }
+
+    /* Column filter dropdown */
+    .filter-dropdown {
+      position: fixed; z-index: 500; background: white;
+      border: 1px solid #ddd; border-radius: 6px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.14);
+      width: 240px; display: flex; flex-direction: column;
+      max-height: 340px; overflow: hidden;
+    }
+    .fd-search-wrap {
+      padding: 8px 10px; border-bottom: 1px solid #eee; flex-shrink: 0;
+    }
+    .fd-search-wrap input {
+      width: 100%; padding: 5px 9px; border: 1px solid #ddd;
+      border-radius: 4px; font-size: 12px; font-family: inherit; color: #333;
+    }
+    .fd-search-wrap input:focus { outline: none; border-color: #4caf50; }
+    .fd-select-all {
+      padding: 5px 10px; border-bottom: 1px solid #eee; flex-shrink: 0;
+    }
+    .fd-list { flex: 1; overflow-y: auto; }
+    .fd-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 5px 10px; cursor: pointer; user-select: none;
+    }
+    .fd-item:hover { background: #f5f5f5; }
+    .fd-item input[type="checkbox"] { cursor: pointer; flex-shrink: 0; }
+    .fd-item-label {
+      flex: 1; font-size: 12px; color: #333;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .fd-item-count { font-size: 10px; color: #bbb; flex-shrink: 0; }
+    .fd-footer {
+      padding: 6px 10px; border-top: 1px solid #eee;
+      flex-shrink: 0; display: flex; justify-content: space-between; align-items: center;
+    }
+    .fd-clear-btn {
+      font-size: 11px; padding: 3px 9px; border: 1px solid #ddd;
+      border-radius: 3px; cursor: pointer; background: white;
+      color: #555; font-family: inherit;
+    }
+    .fd-clear-btn:hover { background: #f5f5f5; border-color: #bbb; }
+    .fd-status { font-size: 10px; color: #aaa; }
+    body.dark .filter-dropdown { background: #1a1a2e; border-color: #2a2a4a; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+    body.dark .fd-search-wrap { border-color: #2a2a4a; }
+    body.dark .fd-search-wrap input { background: #0d0d1a; border-color: #2a2a4a; color: #ccc; }
+    body.dark .fd-select-all { border-color: #2a2a4a; }
+    body.dark .fd-item:hover { background: #252540; }
+    body.dark .fd-item-label { color: #ccc; }
+    body.dark .fd-footer { border-color: #2a2a4a; }
+    body.dark .fd-clear-btn { background: #1a1a2e; border-color: #2a2a4a; color: #bbb; }
+    body.dark .fd-clear-btn:hover { background: #252540; }
+
+    /* Data rows */
+    tbody tr:nth-child(even) td { background: #f9f9f9; }
+    tbody tr:hover td { background: #f0f7f0 !important; }
+    td {
+      padding: 8px 12px; border-bottom: 1px solid #f0f0f0;
+      border-right: 1px solid #f0f0f0; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; color: #333;
+    }
+    td:last-child { border-right: none; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr.virt-spacer td { padding: 0; border: none; background: transparent !important; }
+
+    /* Empty / loading states */
+    .table-placeholder {
+      display: flex; align-items: center; justify-content: center;
+      height: 100%; color: #bbb; font-size: 14px; flex-direction: column; gap: 8px;
+    }
+    .table-placeholder .icon { font-size: 36px; }
+
+    /* Status bar */
+    .status-bar {
+      padding: 6px 20px; font-size: 11px; color: #999;
+      background: white; border-top: 1px solid #e8e8e8; flex-shrink: 0;
+    }
+
+    /* ── Column chooser panel ── */
+    .col-chooser {
+      position: fixed; top: 0; right: -320px; width: 300px; height: 100%;
+      background: white; border-left: 1px solid #e0e0e0;
+      box-shadow: -4px 0 20px rgba(0,0,0,0.1);
+      display: flex; flex-direction: column; z-index: 200;
+      transition: right 0.22s ease;
+    }
+    .col-chooser.open { right: 0; }
+    .chooser-header {
+      padding: 14px 16px; border-bottom: 1px solid #eee;
+      display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+    }
+    .chooser-header h3 { font-size: 13px; font-weight: 600; color: #333; }
+    .chooser-close { cursor: pointer; color: #888; font-size: 20px; line-height: 1; padding: 2px 5px; border-radius: 3px; }
+    .chooser-close:hover { background: #f0f0f0; color: #333; }
+    .chooser-search { padding: 10px 14px; flex-shrink: 0; border-bottom: 1px solid #f0f0f0; }
+    .chooser-search input {
+      width: 100%; padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px;
+      font-size: 12px; font-family: inherit; color: #333;
+    }
+    .chooser-search input:focus { outline: none; border-color: #4caf50; }
+    .chooser-actions { padding: 6px 14px; display: flex; gap: 8px; flex-shrink: 0; border-bottom: 1px solid #f0f0f0; }
+    .chooser-action-btn {
+      font-size: 11px; padding: 4px 10px; border: 1px solid #d0d0d0;
+      border-radius: 3px; cursor: pointer; background: white; color: #555; font-family: inherit;
+    }
+    .chooser-action-btn:hover { background: #f5f5f5; }
+    .chooser-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+    .chooser-item { display: flex; align-items: center; gap: 9px; padding: 7px 14px; cursor: pointer; }
+    .chooser-item:hover { background: #f5f5f5; }
+    .chooser-item input[type="checkbox"] { cursor: pointer; flex-shrink: 0; }
+    .chooser-item label { font-size: 12px; color: #444; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+
+    /* ── Dark content mode (sidebar always stays dark) ── */
+    body.dark .main { background: #0d0d1a; }
+    body.dark .stats-bar { background: #13132a; border-color: #252540; color: #ccc; }
+    body.dark .kpi-label { color: #666; }
+    body.dark .kpi-value.neutral { color: #ccc; }
+    body.dark .toolbar { background: #13132a; border-color: #252540; }
+    body.dark .search-global { background: #0d0d1a; border-color: #252540; color: #ccc; }
+    body.dark .search-global::placeholder { color: #444; }
+    body.dark .btn-outline { background: #13132a; color: #bbb; border-color: #252540; }
+    body.dark .btn-outline:hover { background: #1a1a30; }
+    body.dark .btn-outline.active { background: #1f1f1f; color: white; border-color: #444; }
+    body.dark .table-wrap { background: #0d0d1a; }
+    body.dark .thead-headers th { background: #1a1a2e; border-color: #252540; }
+    body.dark .th-name { color: #ccc; }
+    body.dark .th-sort.on { color: #e0e0e0; }
+    body.dark .th-inner:hover { background: rgba(255,255,255,0.04); }
+    body.dark tbody tr:nth-child(even) td { background: #101020; }
+    body.dark tbody tr:hover td { background: #182818 !important; }
+    body.dark td { border-color: #1a1a2e; color: #ccc; }
+    body.dark .status-bar { background: #13132a; border-color: #252540; color: #555; }
+    body.dark .table-placeholder { color: #444; }
+    body.dark .col-chooser { background: #13132a; border-color: #252540; }
+    body.dark .chooser-header { border-color: #252540; }
+    body.dark .chooser-header h3 { color: #e0e0e0; }
+    body.dark .chooser-close:hover { background: #252540; color: #e0e0e0; }
+    body.dark .chooser-search { border-color: #252540; }
+    body.dark .chooser-search input { background: #0d0d1a; border-color: #252540; color: #ccc; }
+    body.dark .chooser-actions { border-color: #252540; }
+    body.dark .chooser-action-btn { background: #1a1a2e; border-color: #252540; color: #bbb; }
+    body.dark .chooser-item:hover { background: #1a1a2e; }
+    body.dark .chooser-item label { color: #ccc; }
+    body.dark .resize-handle:hover { background: rgba(255,255,255,0.15); }
+
+    /* ── Stats info button ── */
+    .th-stats-btn {
+      flex-shrink: 0; padding: 2px 3px; border: none; background: none;
+      cursor: pointer; color: #bbb; border-radius: 3px; line-height: 1;
+      display: flex; align-items: center; justify-content: center; font-size: 11px;
+    }
+    .th-stats-btn:hover { background: rgba(0,0,0,0.08); color: #1565c0; }
+    .th-stats-btn.has-pin { color: #1565c0; }
+    body.dark .th-stats-btn { color: #555; }
+    body.dark .th-stats-btn:hover { background: rgba(255,255,255,0.08); color: #64b5f6; }
+    body.dark .th-stats-btn.has-pin { color: #64b5f6; }
+
+    /* ── Stats popup ── */
+    .stats-popup {
+      position: fixed; z-index: 501; background: white;
+      border: 1px solid #ddd; border-radius: 6px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.14);
+      width: 230px; overflow: hidden;
+    }
+    .sp-title {
+      padding: 8px 12px; background: #f4f4f4; border-bottom: 1px solid #eee;
+      font-size: 12px; font-weight: 600; color: #444;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .sp-row {
+      display: flex; align-items: center; padding: 6px 8px 6px 12px;
+      border-bottom: 1px solid #f5f5f5; gap: 6px;
+    }
+    .sp-row:last-child { border-bottom: none; }
+    .sp-label { font-size: 11px; color: #888; flex: 0 0 82px; }
+    .sp-value {
+      flex: 1; font-size: 12px; font-weight: 600; color: #333;
+      text-align: right; font-variant-numeric: tabular-nums;
+    }
+    .sp-pin-btn {
+      flex-shrink: 0; width: 26px; height: 26px; border: 1px solid transparent;
+      background: none; cursor: pointer; border-radius: 4px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; opacity: 0.35; transition: opacity 0.12s, background 0.12s;
+    }
+    .sp-pin-btn:hover { opacity: 1; background: #f0f0f0; border-color: #ddd; }
+    .sp-pin-btn.pinned { opacity: 1; background: #e3f2fd; border-color: #90caf9; }
+
+    /* ── Pinned aggregation row ── */
+    .stats-row th {
+      background: #e8f5e9; border-bottom: 2px solid #a5d6a7;
+      border-right: 1px solid #c8e6c9; padding: 3px 12px 4px;
+    }
+    .stats-row th:last-child { border-right: none; }
+    .stats-row th.has-pin { cursor: pointer; }
+    .stats-row th.has-pin:hover { background: #dcedc8; }
+    .stats-cell { display: flex; flex-direction: column; align-items: flex-end; }
+    .stats-cell-type {
+      font-size: 9px; color: #558b2f; text-transform: uppercase;
+      letter-spacing: 0.5px; font-weight: 600;
+    }
+    .stats-cell-value {
+      font-size: 12px; font-weight: 700; color: #2e7d32;
+      font-variant-numeric: tabular-nums; line-height: 1.3;
+    }
+    body.dark .stats-popup { background: #1a1a2e; border-color: #2a2a4a; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+    body.dark .sp-title { background: #12122a; border-color: #2a2a4a; color: #ccc; }
+    body.dark .sp-row { border-color: #1f1f38; }
+    body.dark .sp-label { color: #666; }
+    body.dark .sp-value { color: #ccc; }
+    body.dark .sp-pin-btn:hover { background: #252540; border-color: #3a3a60; }
+    body.dark .sp-pin-btn.pinned { background: #1a2a3a; border-color: #3a6a9a; }
+    body.dark .stats-row th { background: #0d1f0d; border-color: #1a3a1a; }
+    body.dark .stats-row th.has-pin:hover { background: #122012; }
+    body.dark .stats-cell-type { color: #4caf50; }
+    body.dark .stats-cell-value { color: #66bb6a; }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════ SIDEBAR ══════════════ -->
+<div class="sidebar">
+  <div>
+    <h1>QVD Viewer</h1>
+    <p class="subtitle">Open a local QVD file — no data leaves your machine</p>
+  </div>
+
+  <div>
+    <div class="sidebar-section-label">QVD File</div>
+    <div class="upload-zone" id="dropZone">
+      <input type="file" id="fileInput" accept=".qvd">
+      <span class="zone-icon">📁</span>
+      <span class="zone-label">Click or drop QVD file</span>
+      <div class="file-name-display" id="fileNameDisplay"></div>
+    </div>
+  </div>
+
+  <div class="progress-section" id="progressSection">
+    <div class="sidebar-section-label">Parsing…</div>
+    <div class="progress-label" id="progressLabel">Reading file…</div>
+    <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-pct" id="progressPct">0%</div>
+  </div>
+
+  <div class="meta-card" id="metaCard">
+    <div class="meta-row"><span class="meta-key">Fields</span><span class="meta-val" id="metaFields">—</span></div>
+    <div class="meta-row"><span class="meta-key">Rows</span><span class="meta-val" id="metaRows">—</span></div>
+    <div class="meta-row"><span class="meta-key">Created</span><span class="meta-val" id="metaCreated">—</span></div>
+  </div>
+
+  <div class="sidebar-footer">
+    <a href="https://github.com/bitmetric-bv/qvd-viewer" target="_blank" rel="noopener">github.com/bitmetric-bv/qvd-viewer</a>
+    <div class="footer-date">Last updated: Apr 2025</div>
+  </div>
+</div>
+
+<!-- ══════════════ MAIN ══════════════ -->
+<div class="main">
+
+  <!-- Stats bar -->
+  <div class="stats-bar">
+    <div class="kpi">
+      <div class="kpi-label">Total Rows</div>
+      <div class="kpi-value neutral muted" id="kpiTotal">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Visible Rows</div>
+      <div class="kpi-value orange muted" id="kpiVisible">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Columns</div>
+      <div class="kpi-value neutral muted" id="kpiColumns">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Fields</div>
+      <div class="kpi-value neutral muted" id="kpiFields">—</div>
+    </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <input class="search-global" id="globalSearch" type="text" placeholder="Search in all fields…" disabled>
+    <button class="btn btn-outline" id="btnColumns" disabled>Columns</button>
+    <button class="btn btn-outline" id="btnDark">🌙 Dark</button>
+    <button class="btn btn-dark" id="btnExport" disabled>⬇ Export CSV</button>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap" id="tableWrap">
+    <div class="table-placeholder" id="placeholder">
+      <span class="icon">📂</span>
+      <span>Drop a QVD file to get started</span>
+    </div>
+    <table id="dataTable" style="display:none">
+      <colgroup id="colgroup"></colgroup>
+      <thead>
+        <tr class="thead-headers" id="headersRow"></tr>
+        <tr class="stats-row" id="statsRow" style="display:none"></tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- Status bar -->
+  <div class="status-bar" id="statusBar">Drop a QVD file to begin.</div>
+
+</div>
+
+<!-- ══════════════ STATS POPUP ══════════════ -->
+<div id="statsPopup" class="stats-popup" style="display:none">
+  <div class="sp-title" id="spTitle"></div>
+  <div id="spBody"></div>
+</div>
+
+<!-- ══════════════ COLUMN FILTER DROPDOWN ══════════════ -->
+<div id="filterDropdown" class="filter-dropdown" style="display:none">
+  <div class="fd-search-wrap">
+    <input type="text" id="fdSearch" placeholder="Zoek waarden…" autocomplete="off">
+  </div>
+  <div class="fd-select-all">
+    <label class="fd-item">
+      <input type="checkbox" id="fdSelectAll">
+      <span class="fd-item-label" style="font-style:italic">(Alles selecteren)</span>
+    </label>
+  </div>
+  <div class="fd-list" id="fdList"></div>
+  <div class="fd-footer">
+    <button id="fdClearBtn" class="fd-clear-btn">Filter wissen</button>
+    <span class="fd-status" id="fdStatus"></span>
+  </div>
+</div>
+
+<!-- ══════════════ COLUMN CHOOSER PANEL ══════════════ -->
+<div class="col-chooser" id="colChooser">
+  <div class="chooser-header">
+    <h3>Choose Columns</h3>
+    <span class="chooser-close" id="chooserClose">×</span>
+  </div>
+  <div class="chooser-search">
+    <input type="text" id="chooserSearch" placeholder="Search fields…">
+  </div>
+  <div class="chooser-actions">
+    <button class="chooser-action-btn" id="chooserSelectAll">Select all</button>
+    <button class="chooser-action-btn" id="chooserClearAll">Clear all</button>
+    <button class="chooser-action-btn" id="chooserFirst20">First 20</button>
+  </div>
+  <div class="chooser-list" id="chooserList"></div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+// Worker source — QVD parser runs off the main thread
+// ════════════════════════════════════════════════════════════════
+const WORKER_SRC = `
+self.onmessage = function(e) {
+  var buf = e.data.buffer;
+  try {
+    var result = parseQvd(buf);
+    self.postMessage({ type: 'done', rows: result.rows, fields: result.fields, meta: result.meta });
+  } catch(err) {
+    self.postMessage({ type: 'error', message: err.message });
+  }
+};
+
+function parseQvd(buffer) {
+  var u8  = new Uint8Array(buffer);
+  var dv  = new DataView(buffer);
+  var dec = new TextDecoder('utf-8');
+
+  // ── Locate null-byte header boundary ──
+  var xmlLen = 0;
+  while (xmlLen < u8.length && u8[xmlLen] !== 0) xmlLen++;
+  if (xmlLen === u8.length) throw new Error('QVD header terminator not found');
+
+  var xmlStr = dec.decode(u8.subarray(0, xmlLen));
+
+  // ── Parse XML header with regex (DOMParser unavailable in all worker contexts) ──
+  // Use new RegExp() + [^] (matches any char incl. newlines) to avoid
+  // backslash/forward-slash escaping issues inside the template literal.
+  function tagVal(xml, tag) {
+    var m = xml.match(new RegExp('<' + tag + '[^>]*>([^]*?)</' + tag + '>'));
+    return m ? m[1].trim() : '';
+  }
+  function tagNum(xml, tag) { return parseInt(tagVal(xml, tag)) || 0; }
+
+  var noOfRecords    = tagNum(xmlStr, 'NoOfRecords');
+  var recordByteSize = tagNum(xmlStr, 'RecordByteSize');
+  var createdUtc     = tagVal(xmlStr, 'CreatedUtcTime') || tagVal(xmlStr, 'CreateUtcDate') || '';
+
+  // Split on <QvdFieldHeader> blocks
+  var fieldBlocks = [];
+  var fhRe = new RegExp('<QvdFieldHeader>([^]*?)</QvdFieldHeader>', 'g');
+  var fm;
+  while ((fm = fhRe.exec(xmlStr)) !== null) fieldBlocks.push(fm[1]);
+
+  if (!fieldBlocks.length) throw new Error('No QvdFieldHeader elements found in XML header');
+
+  var fields = fieldBlocks.map(function(fh) {
+    return {
+      name:        tagVal(fh, 'FieldName'),
+      bitOffset:   tagNum(fh, 'BitOffset'),
+      bitWidth:    tagNum(fh, 'BitWidth'),
+      bias:        parseInt(tagVal(fh, 'Bias')) || 0,
+      noOfSymbols: tagNum(fh, 'NoOfSymbols'),
+      offset:      tagNum(fh, 'Offset'),
+      length:      tagNum(fh, 'Length'),
+    };
+  });
+
+  // ── Symbol section ──
+  var symBase = xmlLen + 1;
+
+  // Track whether each field's symbols include any numeric type byte (1,2,5,6).
+  // Qlik almost always stores numeric fields as dual (type 5 or 6), so checking
+  // typeof symbol === 'number' is not reliable — we must inspect the type byte.
+  var fieldHasNumType = new Array(fields.length).fill(false);
+
+  var allSymbols = fields.map(function(field, fi) {
+    var syms = [];
+    var p    = symBase + field.offset;
+    var pEnd = p + field.length;
+
+    while (p < pEnd && syms.length < field.noOfSymbols) {
+      var type = u8[p++];
+      if (type === 1) {                          // int32
+        fieldHasNumType[fi] = true;
+        syms.push(dv.getInt32(p, true)); p += 4;
+      } else if (type === 2) {                   // float64
+        fieldHasNumType[fi] = true;
+        syms.push(dv.getFloat64(p, true)); p += 8;
+      } else if (type === 4) {                   // null-terminated string
+        var s = p; while (p < u8.length && u8[p] !== 0) p++;
+        syms.push(dec.decode(u8.subarray(s, p++)));
+      } else if (type === 5) {                   // dual int + string — keep string
+        fieldHasNumType[fi] = true;
+        p += 4;
+        var s = p; while (p < u8.length && u8[p] !== 0) p++;
+        syms.push(dec.decode(u8.subarray(s, p++)));
+      } else if (type === 6) {                   // dual double + string — keep string
+        fieldHasNumType[fi] = true;
+        p += 8;
+        var s = p; while (p < u8.length && u8[p] !== 0) p++;
+        syms.push(dec.decode(u8.subarray(s, p++)));
+      } else {
+        break; // unknown type — stop parsing this field's symbols
+      }
+    }
+
+    // Progress: symbol parsing is ~20% of work
+    if ((fi + 1) % 10 === 0 || fi === fields.length - 1) {
+      self.postMessage({ type: 'progress', pct: Math.round(((fi + 1) / fields.length) * 20) });
+    }
+    return syms;
+  });
+
+  // ── Record section ──
+  var symTotal = fields.reduce(function(mx, f) { return Math.max(mx, f.offset + f.length); }, 0);
+  var recBase  = symBase + symTotal;
+
+  // A field is numeric when at least one symbol had a numeric type byte (1,2,5,6).
+  var isNumeric = fieldHasNumType;
+
+  var rows = new Array(noOfRecords);
+  var reportEvery = Math.max(1, Math.floor(noOfRecords / 80));
+
+  for (var r = 0; r < noOfRecords; r++) {
+    var rOff = recBase + r * recordByteSize;
+    var row  = {};
+
+    for (var fi = 0; fi < fields.length; fi++) {
+      var field = fields[fi];
+      var idx   = 0;
+      for (var b = 0; b < field.bitWidth; b++) {
+        var abs = field.bitOffset + b;
+        if (u8[rOff + (abs >> 3)] & (1 << (abs & 7))) idx |= (1 << b);
+      }
+      var symIdx = idx + field.bias;
+      var syms   = allSymbols[fi];
+      row[field.name] = (symIdx >= 0 && symIdx < syms.length) ? syms[symIdx] : '';
+    }
+    rows[r] = row;
+
+    if (r % reportEvery === 0) {
+      self.postMessage({ type: 'progress', pct: 20 + Math.round((r / noOfRecords) * 78) });
+    }
+  }
+
+  self.postMessage({ type: 'progress', pct: 100 });
+
+  return {
+    rows:   rows,
+    fields: fields.map(function(f, fi) { return { name: f.name, numeric: isNumeric[fi] }; }),
+    meta:   { noOfRecords: noOfRecords, noOfFields: fields.length, createdUtc: createdUtc },
+  };
+}
+`;
+
+// ════════════════════════════════════════════════════════════════
+// App state
+// ════════════════════════════════════════════════════════════════
+const S = {
+  allRows:       [],      // all parsed rows
+  filteredRows:  [],      // after filters
+  fields:        [],      // [{ name, numeric }]
+  visibleFields: [],      // names of visible columns
+  colWidths:     {},      // field name → width px
+  colFilters:    {},      // field name → Set of selected values (undefined = no filter)
+  uniqueValues:  {},      // field name → [[strVal, count], ...] (lazy)
+  pinnedAgg:     {},      // field name → 'count'|'sum'|'avg'|'min'|'max'
+  globalSearch:  '',
+  sortField:     null,
+  sortDir:       0,       // 0=none 1=asc -1=desc
+  worker:        null,
+};
+
+const ROW_H  = 37;   // virtual row height px
+const OVER   = 30;   // overscan rows
+
+// ════════════════════════════════════════════════════════════════
+// DOM refs
+// ════════════════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+const dropZone       = $('dropZone');
+const fileInput      = $('fileInput');
+const fileNameDisp   = $('fileNameDisplay');
+const progressSec    = $('progressSection');
+const progressLabel  = $('progressLabel');
+const progressFill   = $('progressFill');
+const progressPct    = $('progressPct');
+const metaCard       = $('metaCard');
+const kpiTotal       = $('kpiTotal');
+const kpiVisible     = $('kpiVisible');
+const kpiColumns     = $('kpiColumns');
+const kpiFields      = $('kpiFields');
+const globalSearch   = $('globalSearch');
+const btnColumns     = $('btnColumns');
+const btnDark        = $('btnDark');
+const btnExport      = $('btnExport');
+const tableWrap      = $('tableWrap');
+const placeholder    = $('placeholder');
+const dataTable      = $('dataTable');
+const colgroupEl     = $('colgroup');
+const headersRow     = $('headersRow');
+const tbody          = $('tbody');
+const statusBar      = $('statusBar');
+const colChooser     = $('colChooser');
+const chooserSearch  = $('chooserSearch');
+const chooserList    = $('chooserList');
+
+// ════════════════════════════════════════════════════════════════
+// File loading
+// ════════════════════════════════════════════════════════════════
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e => { if (e.target.files[0]) loadFile(e.target.files[0]); });
+
+function loadFile(file) {
+  if (!file.name.match(/\.qvd$/i)) { alert('Please select a .qvd file.'); return; }
+
+  fileNameDisp.textContent = file.name;
+  fileNameDisp.classList.add('visible');
+  showProgress(true, 'Reading file…', 0);
+  metaCard.classList.remove('visible');
+  setEnabled(false);
+
+  const reader = new FileReader();
+  reader.onload = e => startWorker(e.target.result);
+  reader.onerror = () => { alert('Failed to read file.'); showProgress(false); };
+  reader.readAsArrayBuffer(file);
+}
+
+function startWorker(buffer) {
+  if (S.worker) { S.worker.terminate(); S.worker = null; }
+
+  const blob = new Blob([WORKER_SRC], { type: 'application/javascript' });
+  const url  = URL.createObjectURL(blob);
+  S.worker   = new Worker(url);
+  URL.revokeObjectURL(url);
+
+  S.worker.onmessage = e => {
+    const d = e.data;
+    if (d.type === 'progress') {
+      const pct = d.pct;
+      progressFill.style.width = pct + '%';
+      progressPct.textContent  = pct + '%';
+      if (pct < 20) progressLabel.textContent = 'Parsing symbols…';
+      else          progressLabel.textContent  = 'Decoding rows…';
+    } else if (d.type === 'done') {
+      showProgress(false);
+      S.worker = null;
+      onParsed(d.rows, d.fields, d.meta);
+    } else if (d.type === 'error') {
+      showProgress(false);
+      S.worker = null;
+      alert('Parse error: ' + d.message);
+    }
+  };
+  S.worker.onerror = err => {
+    showProgress(false); S.worker = null;
+    alert('Worker error: ' + err.message);
+  };
+
+  // Transfer ArrayBuffer so it's not copied
+  S.worker.postMessage({ buffer }, [buffer]);
+}
+
+function onParsed(rows, fields, meta) {
+  S.allRows      = rows;
+  S.fields       = fields;
+  S.colFilters   = {};
+  S.uniqueValues = {};
+  S.pinnedAgg    = {};
+  S.globalSearch = '';
+  S.sortField = null; S.sortDir = 0;
+
+  // Default visible: first 20 columns
+  S.visibleFields = fields.slice(0, 20).map(f => f.name);
+
+  // Default column widths
+  fields.forEach(f => {
+    S.colWidths[f.name] = Math.max(100, Math.min(220, f.name.length * 9 + 60));
+  });
+
+  // Update metadata sidebar
+  $('metaFields').textContent  = meta.noOfFields.toLocaleString();
+  $('metaRows').textContent    = meta.noOfRecords.toLocaleString();
+  $('metaCreated').textContent = meta.createdUtc
+    ? new Date(meta.createdUtc).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    : '—';
+  metaCard.classList.add('visible');
+
+  // KPIs
+  kpiFields.textContent = meta.noOfFields.toLocaleString();
+  kpiFields.classList.remove('muted');
+  kpiTotal.textContent  = meta.noOfRecords.toLocaleString();
+  kpiTotal.classList.remove('muted');
+
+  setEnabled(true);
+  globalSearch.value = '';
+  applyFilters();
+  buildChooser();
+}
+
+function setEnabled(on) {
+  globalSearch.disabled = !on;
+  btnColumns.disabled   = !on;
+  btnExport.disabled    = !on;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Filter pipeline
+// ════════════════════════════════════════════════════════════════
+let filterTimer = null;
+
+function scheduleFilter() {
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(applyFilters, 200);
+}
+
+function applyFilters() {
+  const gs = S.globalSearch.toLowerCase();
+  const vf = S.visibleFields;
+
+  let rows = S.allRows;
+
+  // Global search across visible fields
+  if (gs) {
+    rows = rows.filter(row => {
+      for (let i = 0; i < vf.length; i++) {
+        const v = row[vf[i]];
+        if (v !== null && v !== undefined && String(v).toLowerCase().includes(gs)) return true;
+      }
+      return false;
+    });
+  }
+
+  // Per-column checkbox filters (AND) — each colFilters[f] is a Set of selected string values
+  const activeFields = Object.keys(S.colFilters).filter(f => S.colFilters[f]);
+  if (activeFields.length) {
+    rows = rows.filter(row => {
+      for (let i = 0; i < activeFields.length; i++) {
+        const f   = activeFields[i];
+        const sel = S.colFilters[f];
+        const k   = row[f] == null ? '' : String(row[f]);
+        if (!sel.has(k)) return false;
+      }
+      return true;
+    });
+  }
+
+  // Sort
+  if (S.sortField && S.sortDir !== 0) {
+    const sf  = S.sortField;
+    const dir = S.sortDir;
+    const fi  = S.fields.find(f => f.name === sf);
+    const num = fi && fi.numeric;
+    rows = rows.slice().sort((a, b) => {
+      let av = a[sf], bv = b[sf];
+      if (num) {
+        av = av === '' || av == null ? -Infinity : +av;
+        bv = bv === '' || bv == null ? -Infinity : +bv;
+        return dir * (av - bv);
+      }
+      av = av == null ? '' : String(av).toLowerCase();
+      bv = bv == null ? '' : String(bv).toLowerCase();
+      return dir * (av < bv ? -1 : av > bv ? 1 : 0);
+    });
+  }
+
+  S.filteredRows = rows;
+  updateKpis();
+  renderTable();
+  if (spField) refreshStatsPopup();
+}
+
+// ════════════════════════════════════════════════════════════════
+// KPIs & status
+// ════════════════════════════════════════════════════════════════
+function updateKpis() {
+  const total   = S.allRows.length;
+  const visible = S.filteredRows.length;
+  const cols    = S.visibleFields.length;
+  const fields  = S.fields.length;
+
+  kpiTotal.textContent   = total.toLocaleString();
+  kpiVisible.textContent = visible.toLocaleString();
+  kpiColumns.textContent = cols.toLocaleString();
+  kpiFields.textContent  = fields.toLocaleString();
+
+  kpiTotal.classList.remove('muted');
+  kpiVisible.classList.remove('muted');
+  kpiColumns.classList.remove('muted');
+  kpiFields.classList.remove('muted');
+
+  // Orange if filtered
+  kpiVisible.classList.toggle('orange', visible < total);
+  kpiColumns.classList.toggle('orange', cols < fields);
+
+  statusBar.textContent = `Showing ${visible.toLocaleString()} of ${total.toLocaleString()} rows | ${cols} of ${fields} columns visible`;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Table rendering — virtual scroll
+// ════════════════════════════════════════════════════════════════
+let scrollBound = false;
+
+function renderTable() {
+  const vf = S.visibleFields;
+
+  // Show table, hide placeholder
+  placeholder.style.display = 'none';
+  dataTable.style.display   = '';
+
+  // Rebuild colgroup
+  colgroupEl.innerHTML = '';
+  vf.forEach(f => {
+    const col = document.createElement('col');
+    col.style.width = (S.colWidths[f] || 150) + 'px';
+    colgroupEl.appendChild(col);
+  });
+
+  // Rebuild header row
+  headersRow.innerHTML = '';
+  vf.forEach((fname, ci) => {
+    const th = document.createElement('th');
+
+    const inner = document.createElement('div');
+    inner.className = 'th-inner';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'th-name';
+    nameEl.textContent = fname;
+    nameEl.title = fname;
+
+    const sortEl = document.createElement('span');
+    sortEl.className = 'th-sort';
+    if (S.sortField === fname) {
+      sortEl.textContent = S.sortDir === 1 ? '↑' : '↓';
+      sortEl.classList.add('on');
+    } else {
+      sortEl.textContent = '↕';
+    }
+
+    // Stats button — only for numeric fields
+    const isNum = S.fields.find(f => f.name === fname)?.numeric;
+    if (isNum) {
+      const statsBtn = document.createElement('button');
+      statsBtn.className = 'th-stats-btn' + (S.pinnedAgg[fname] ? ' has-pin' : '');
+      statsBtn.title = 'Statistieken';
+      statsBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="6" cy="6" r="5.25" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="5.4" y="5" width="1.2" height="4"/><rect x="5.4" y="3" width="1.2" height="1.2"/></svg>';
+      statsBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        openStatsPopup(fname, statsBtn);
+      });
+      inner.appendChild(nameEl);
+      inner.appendChild(sortEl);
+      inner.appendChild(statsBtn);
+    } else {
+      inner.appendChild(nameEl);
+      inner.appendChild(sortEl);
+    }
+
+    // Filter icon button — separate click, does not trigger sort
+    const filterBtn = document.createElement('button');
+    filterBtn.className = 'th-filter-btn' + (S.colFilters[fname] ? ' active' : '');
+    filterBtn.title = 'Filteren';
+    filterBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor"><path d="M1 1h10L7.5 5.5V11l-3-1.5V5.5z"/></svg>';
+    filterBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      openFilterDropdown(fname, filterBtn);
+    });
+    inner.appendChild(filterBtn);
+    inner.addEventListener('click', () => cycleSort(fname));
+
+    const handle = document.createElement('div');
+    handle.className = 'resize-handle';
+    setupResize(handle, ci, fname);
+
+    th.appendChild(inner);
+    th.appendChild(handle);
+    headersRow.appendChild(th);
+  });
+
+  renderPinnedRow();
+
+  // Bind scroll once
+  if (!scrollBound) {
+    tableWrap.addEventListener('scroll', renderVisibleRows, { passive: true });
+    scrollBound = true;
+  }
+
+  tableWrap.scrollTop = 0;
+  renderVisibleRows();
+}
+
+function renderVisibleRows() {
+  const total  = S.filteredRows.length;
+  const vf     = S.visibleFields;
+  const cc     = vf.length;
+
+  const headH  = headersRow.offsetHeight || 38;
+  const viewH  = tableWrap.clientHeight - headH;
+  const scroll = tableWrap.scrollTop;
+
+  const startIdx = Math.max(0,     Math.floor(scroll / ROW_H) - OVER);
+  const endIdx   = Math.min(total, Math.ceil((scroll + viewH) / ROW_H) + OVER);
+
+  const frag = document.createDocumentFragment();
+
+  if (startIdx > 0) {
+    frag.appendChild(makeSpacer(startIdx * ROW_H, cc));
+  }
+
+  for (let i = startIdx; i < endIdx; i++) {
+    frag.appendChild(buildRow(S.filteredRows[i], vf));
+  }
+
+  if (endIdx < total) {
+    frag.appendChild(makeSpacer((total - endIdx) * ROW_H, cc));
+  }
+
+  tbody.innerHTML = '';
+  tbody.appendChild(frag);
+}
+
+function buildRow(row, vf) {
+  const tr = document.createElement('tr');
+  for (let i = 0; i < vf.length; i++) {
+    const fname = vf[i];
+    const val   = row[fname];
+    const td    = document.createElement('td');
+    const fi    = S.fields.find(f => f.name === fname);
+    if (fi && fi.numeric && val !== '' && val != null) {
+      td.className = 'num';
+    }
+    td.textContent = val == null ? '' : val;
+    tr.appendChild(td);
+  }
+  return tr;
+}
+
+function makeSpacer(height, colCount) {
+  const tr = document.createElement('tr');
+  tr.className = 'virt-spacer';
+  tr.style.height = height + 'px';
+  const td = document.createElement('td');
+  td.colSpan = colCount;
+  tr.appendChild(td);
+  return tr;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Sort
+// ════════════════════════════════════════════════════════════════
+function cycleSort(fname) {
+  if (S.sortField !== fname) {
+    S.sortField = fname; S.sortDir = 1;
+  } else if (S.sortDir === 1) {
+    S.sortDir = -1;
+  } else {
+    S.sortField = null; S.sortDir = 0;
+  }
+  applyFilters();
+}
+
+// ════════════════════════════════════════════════════════════════
+// Column resize
+// ════════════════════════════════════════════════════════════════
+function setupResize(handle, colIdx, fname) {
+  handle.addEventListener('mousedown', e => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startX   = e.clientX;
+    const startW   = S.colWidths[fname] || 150;
+    handle.classList.add('dragging');
+
+    const onMove = ev => {
+      const newW = Math.max(60, startW + (ev.clientX - startX));
+      S.colWidths[fname] = newW;
+      const cols = colgroupEl.children;
+      if (cols[colIdx]) cols[colIdx].style.width = newW + 'px';
+    };
+    const onUp = () => {
+      handle.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+// ════════════════════════════════════════════════════════════════
+// Stats popup + pinned aggregation row
+// ════════════════════════════════════════════════════════════════
+const statsPopup = $('statsPopup');
+const statsRow   = $('statsRow');
+let   spField    = null;
+let   spAnchor   = null;
+
+const AGG_DEFS = [
+  { key: 'count', label: 'Aantal',     abbr: 'CNT' },
+  { key: 'sum',   label: 'Som',        abbr: 'SOM' },
+  { key: 'avg',   label: 'Gemiddeld',  abbr: 'GEM' },
+  { key: 'min',   label: 'Min',        abbr: 'MIN' },
+  { key: 'max',   label: 'Max',        abbr: 'MAX' },
+];
+
+function parseStatNum(v) {
+  if (v === '' || v == null) return NaN;
+  if (typeof v === 'number') return v;
+  // Strip thousand-separators (both . and , variants) then parse
+  const s = String(v).trim().replace(/[^\d\-+.eE]/g, '');
+  return s === '' ? NaN : +s;
+}
+
+function computeStats(fname, rows) {
+  let count = 0, sum = 0, min = Infinity, max = -Infinity;
+  for (let i = 0; i < rows.length; i++) {
+    const v = rows[i][fname];
+    const n = parseStatNum(v);
+    if (isNaN(n)) continue;
+    count++;
+    sum += n;
+    if (n < min) min = n;
+    if (n > max) max = n;
+  }
+  return {
+    count,
+    sum: count > 0 ? sum : null,
+    min: count > 0 ? min : null,
+    max: count > 0 ? max : null,
+    avg: count > 0 ? sum / count : null,
+  };
+}
+
+function fmtStat(v, key) {
+  if (v === null || v === undefined) return '—';
+  if (key === 'count') return Math.round(v).toLocaleString();
+  // Auto decimal places: keep up to 4, strip trailing zeros
+  const abs = Math.abs(v);
+  const dec = abs === 0 ? 0 : abs < 1 ? 4 : abs < 1000 ? 2 : abs < 1e6 ? 1 : 0;
+  return v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: dec });
+}
+
+function openStatsPopup(fname, anchorBtn) {
+  if (spField === fname && statsPopup.style.display !== 'none') {
+    closeStatsPopup(); return;
+  }
+  closeStatsPopup();
+  spField  = fname;
+  spAnchor = anchorBtn;
+  refreshStatsPopup();
+
+  const rect = anchorBtn.getBoundingClientRect();
+  let left = rect.left;
+  let top  = rect.bottom + 4;
+  if (left + 230 > window.innerWidth  - 8) left = window.innerWidth  - 238;
+  if (top  + 220 > window.innerHeight - 8) top  = rect.top - 224;
+
+  statsPopup.style.left    = left + 'px';
+  statsPopup.style.top     = top  + 'px';
+  statsPopup.style.display = 'block';
+}
+
+function closeStatsPopup() {
+  statsPopup.style.display = 'none';
+  spField = null; spAnchor = null;
+}
+
+function refreshStatsPopup() {
+  if (!spField) return;
+  const stats = computeStats(spField, S.filteredRows);
+  $('spTitle').textContent = spField;
+  const body = $('spBody');
+  body.innerHTML = '';
+  AGG_DEFS.forEach(({ key, label }) => {
+    const val = stats[key];
+    const isPinned = S.pinnedAgg[spField] === key;
+    const row = document.createElement('div');
+    row.className = 'sp-row';
+
+    const lbl = document.createElement('span');
+    lbl.className   = 'sp-label';
+    lbl.textContent = label;
+
+    const val_el = document.createElement('span');
+    val_el.className   = 'sp-value';
+    val_el.textContent = fmtStat(val, key);
+
+    const pinBtn = document.createElement('button');
+    pinBtn.className = 'sp-pin-btn' + (isPinned ? ' pinned' : '');
+    pinBtn.title     = isPinned ? 'Losmaken' : 'Vastmaken';
+    pinBtn.textContent = '📌';
+    pinBtn.addEventListener('click', () => {
+      if (S.pinnedAgg[spField] === key) {
+        delete S.pinnedAgg[spField];
+      } else {
+        S.pinnedAgg[spField] = key;
+      }
+      refreshStatsPopup();
+      renderPinnedRow();
+      // Update has-pin class on the stats button in the header
+      headersRow.querySelectorAll('.th-stats-btn').forEach((btn, i) => {
+        if (S.visibleFields[i] === spField) btn.classList.toggle('has-pin', !!S.pinnedAgg[spField]);
+      });
+    });
+
+    row.appendChild(lbl);
+    row.appendChild(val_el);
+    row.appendChild(pinBtn);
+    body.appendChild(row);
+  });
+}
+
+function renderPinnedRow() {
+  const vf = S.visibleFields;
+  const hasPins = vf.some(f => S.pinnedAgg[f]);
+  statsRow.style.display = hasPins ? '' : 'none';
+  if (!hasPins) return;
+
+  statsRow.innerHTML = '';
+  vf.forEach(fname => {
+    const th  = document.createElement('th');
+    const agg = S.pinnedAgg[fname];
+    if (agg) {
+      const stats = computeStats(fname, S.filteredRows);
+      const def   = AGG_DEFS.find(d => d.key === agg);
+      th.classList.add('has-pin');
+      th.title = 'Klik om los te maken';
+      const cell = document.createElement('div');
+      cell.className = 'stats-cell';
+      const typeEl = document.createElement('span');
+      typeEl.className   = 'stats-cell-type';
+      typeEl.textContent = def.abbr;
+      const valEl = document.createElement('span');
+      valEl.className   = 'stats-cell-value';
+      valEl.textContent = fmtStat(stats[agg], agg);
+      cell.appendChild(typeEl);
+      cell.appendChild(valEl);
+      th.appendChild(cell);
+      th.addEventListener('click', () => {
+        delete S.pinnedAgg[fname];
+        renderPinnedRow();
+        // Sync has-pin on stats button
+        headersRow.querySelectorAll('.th-stats-btn').forEach((btn, i) => {
+          if (S.visibleFields[i] === fname) btn.classList.remove('has-pin');
+        });
+      });
+    }
+    statsRow.appendChild(th);
+  });
+}
+
+// Close stats popup on outside click
+document.addEventListener('mousedown', e => {
+  if (statsPopup.style.display !== 'none' &&
+      !statsPopup.contains(e.target) &&
+      e.target !== spAnchor &&
+      !spAnchor?.contains(e.target)) {
+    closeStatsPopup();
+  }
+}, true);
+
+// ════════════════════════════════════════════════════════════════
+// Column filter dropdown
+// ════════════════════════════════════════════════════════════════
+const filterDropdown = $('filterDropdown');
+const fdSearch       = $('fdSearch');
+const fdSelectAll    = $('fdSelectAll');
+const fdList         = $('fdList');
+const fdStatus       = $('fdStatus');
+let   fdField        = null;   // field whose dropdown is open
+let   fdAnchorBtn    = null;   // the filter icon button that opened it
+
+function getUniqueValues(fname) {
+  if (S.uniqueValues[fname]) return S.uniqueValues[fname];
+  const map = new Map();
+  for (let i = 0; i < S.allRows.length; i++) {
+    const v = S.allRows[i][fname];
+    const k = v == null ? '' : String(v);
+    map.set(k, (map.get(k) || 0) + 1);
+  }
+  const fi = S.fields.find(f => f.name === fname);
+  const entries = [...map.entries()];
+  if (fi && fi.numeric) {
+    entries.sort((a, b) => {
+      const an = parseFloat(a[0]), bn = parseFloat(b[0]);
+      return isNaN(an) ? 1 : isNaN(bn) ? -1 : an - bn;
+    });
+  } else {
+    entries.sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+  }
+  S.uniqueValues[fname] = entries;
+  return entries;
+}
+
+function openFilterDropdown(fname, anchorBtn) {
+  // Toggle: close if already open for same field
+  if (fdField === fname && filterDropdown.style.display !== 'none') {
+    closeFilterDropdown();
+    return;
+  }
+  fdField     = fname;
+  fdAnchorBtn = anchorBtn;
+
+  fdSearch.value = '';
+  populateDropdownList('');
+
+  // Position below the anchor button
+  const rect = anchorBtn.getBoundingClientRect();
+  let left = rect.left;
+  let top  = rect.bottom + 4;
+  // Keep inside viewport
+  if (left + 240 > window.innerWidth - 8) left = window.innerWidth - 248;
+  if (top  + 340 > window.innerHeight - 8) top  = rect.top - 344;
+
+  filterDropdown.style.left    = left + 'px';
+  filterDropdown.style.top     = top  + 'px';
+  filterDropdown.style.display = 'flex';
+  fdSearch.focus();
+}
+
+function closeFilterDropdown() {
+  filterDropdown.style.display = 'none';
+  fdField     = null;
+  fdAnchorBtn = null;
+}
+
+function populateDropdownList(query) {
+  const entries = getUniqueValues(fdField);
+  const sel     = S.colFilters[fdField];           // Set or undefined
+  const q       = query.toLowerCase();
+
+  const filtered = q
+    ? entries.filter(([v]) => v.toLowerCase().includes(q))
+    : entries;
+
+  // "Select all" state: checked when no filter set, or all visible entries selected
+  const allChecked = !sel || filtered.every(([v]) => sel.has(v));
+  fdSelectAll.checked       = allChecked;
+  fdSelectAll.indeterminate = !allChecked && filtered.some(([v]) => !sel || sel.has(v));
+
+  fdList.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  filtered.forEach(([val, count]) => {
+    const checked = !sel || sel.has(val);
+    const item = document.createElement('label');
+    item.className = 'fd-item';
+
+    const cb = document.createElement('input');
+    cb.type    = 'checkbox';
+    cb.checked = checked;
+    cb.addEventListener('change', () => toggleValue(val, cb.checked));
+
+    const lbl = document.createElement('span');
+    lbl.className   = 'fd-item-label';
+    lbl.textContent = val === '' ? '(leeg)' : val;
+    lbl.title       = val;
+
+    const cnt = document.createElement('span');
+    cnt.className   = 'fd-item-count';
+    cnt.textContent = count.toLocaleString();
+
+    item.appendChild(cb);
+    item.appendChild(lbl);
+    item.appendChild(cnt);
+    frag.appendChild(item);
+  });
+  fdList.appendChild(frag);
+  updateFdStatus(filtered.length, entries.length);
+}
+
+function toggleValue(val, checked) {
+  const entries = getUniqueValues(fdField);
+  let sel = S.colFilters[fdField];
+
+  // First interaction on an unfiltered column: start with all selected, then remove this one
+  if (!sel) {
+    sel = new Set(entries.map(([v]) => v));
+  } else {
+    sel = new Set(sel);   // copy so we don't mutate
+  }
+
+  if (checked) sel.add(val); else sel.delete(val);
+
+  // If all unique values are selected → equivalent to no filter
+  if (sel.size === entries.length) {
+    delete S.colFilters[fdField];
+  } else {
+    S.colFilters[fdField] = sel;
+  }
+
+  // Refresh "select all" checkbox and re-filter
+  populateDropdownList(fdSearch.value);
+  refreshFilterIcon(fdField);
+  applyFilters();
+}
+
+function updateFdStatus(shown, total) {
+  fdStatus.textContent = shown < total ? shown + ' / ' + total + ' waarden' : total + ' waarden';
+}
+
+function refreshFilterIcon(fname) {
+  // Update the active class on the filter icon button in the header
+  headersRow.querySelectorAll('.th-filter-btn').forEach((btn, i) => {
+    if (S.visibleFields[i] === fname) {
+      btn.classList.toggle('active', !!S.colFilters[fname]);
+    }
+  });
+}
+
+// "Select all" checkbox in dropdown
+fdSelectAll.addEventListener('change', () => {
+  const entries = getUniqueValues(fdField);
+  const q       = fdSearch.value.toLowerCase();
+  const visible = q ? entries.filter(([v]) => v.toLowerCase().includes(q)) : entries;
+
+  let sel = S.colFilters[fdField] ? new Set(S.colFilters[fdField]) : new Set(entries.map(([v]) => v));
+
+  if (fdSelectAll.checked) {
+    visible.forEach(([v]) => sel.add(v));
+  } else {
+    visible.forEach(([v]) => sel.delete(v));
+  }
+
+  if (sel.size === entries.length) {
+    delete S.colFilters[fdField];
+  } else {
+    S.colFilters[fdField] = sel;
+  }
+
+  populateDropdownList(fdSearch.value);
+  refreshFilterIcon(fdField);
+  applyFilters();
+});
+
+// Search inside dropdown
+fdSearch.addEventListener('input', () => populateDropdownList(fdSearch.value));
+
+// Clear filter button
+$('fdClearBtn').addEventListener('click', () => {
+  delete S.colFilters[fdField];
+  populateDropdownList(fdSearch.value);
+  refreshFilterIcon(fdField);
+  applyFilters();
+});
+
+// Close on outside click
+document.addEventListener('mousedown', e => {
+  if (filterDropdown.style.display !== 'none' &&
+      !filterDropdown.contains(e.target) &&
+      e.target !== fdAnchorBtn &&
+      !fdAnchorBtn?.contains(e.target)) {
+    closeFilterDropdown();
+  }
+}, true);
+
+// ════════════════════════════════════════════════════════════════
+// Column chooser
+// ════════════════════════════════════════════════════════════════
+function buildChooser() {
+  renderChooserList('');
+}
+
+function renderChooserList(query) {
+  chooserList.innerHTML = '';
+  const q = query.toLowerCase();
+  S.fields.forEach(f => {
+    if (q && !f.name.toLowerCase().includes(q)) return;
+    const item = document.createElement('div');
+    item.className = 'chooser-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.id = 'cc-' + f.name;
+    cb.checked = S.visibleFields.includes(f.name);
+    cb.addEventListener('change', () => {
+      if (cb.checked) {
+        if (!S.visibleFields.includes(f.name)) {
+          // Insert in original field order
+          const allNames = S.fields.map(x => x.name);
+          const idx = allNames.indexOf(f.name);
+          let insertAt = S.visibleFields.length;
+          for (let i = 0; i < S.visibleFields.length; i++) {
+            if (allNames.indexOf(S.visibleFields[i]) > idx) { insertAt = i; break; }
+          }
+          S.visibleFields.splice(insertAt, 0, f.name);
+        }
+      } else {
+        S.visibleFields = S.visibleFields.filter(n => n !== f.name);
+      }
+      updateKpis();
+      applyFilters();
+    });
+    const lbl = document.createElement('label');
+    lbl.htmlFor = 'cc-' + f.name;
+    lbl.textContent = f.name;
+    lbl.title = f.name;
+    item.appendChild(cb);
+    item.appendChild(lbl);
+    chooserList.appendChild(item);
+  });
+}
+
+btnColumns.addEventListener('click', () => {
+  colChooser.classList.toggle('open');
+  btnColumns.classList.toggle('active');
+});
+$('chooserClose').addEventListener('click', () => {
+  colChooser.classList.remove('open');
+  btnColumns.classList.remove('active');
+});
+chooserSearch.addEventListener('input', () => renderChooserList(chooserSearch.value));
+
+$('chooserSelectAll').addEventListener('click', () => {
+  S.visibleFields = S.fields.map(f => f.name);
+  renderChooserList(chooserSearch.value);
+  updateKpis(); applyFilters();
+});
+$('chooserClearAll').addEventListener('click', () => {
+  S.visibleFields = [];
+  renderChooserList(chooserSearch.value);
+  updateKpis(); applyFilters();
+});
+$('chooserFirst20').addEventListener('click', () => {
+  S.visibleFields = S.fields.slice(0, 20).map(f => f.name);
+  renderChooserList(chooserSearch.value);
+  updateKpis(); applyFilters();
+});
+
+// ════════════════════════════════════════════════════════════════
+// Global search
+// ════════════════════════════════════════════════════════════════
+globalSearch.addEventListener('input', e => {
+  S.globalSearch = e.target.value;
+  scheduleFilter();
+});
+
+// ════════════════════════════════════════════════════════════════
+// Dark mode
+// ════════════════════════════════════════════════════════════════
+btnDark.addEventListener('click', () => {
+  const isDark = document.body.classList.toggle('dark');
+  btnDark.textContent = isDark ? '☀ Light' : '🌙 Dark';
+});
+
+// ════════════════════════════════════════════════════════════════
+// CSV export (visible/filtered rows, visible columns)
+// ════════════════════════════════════════════════════════════════
+function csvEscape(v) {
+  const s = v == null ? '' : String(v);
+  return (s.includes(',') || s.includes('"') || s.includes('\n'))
+    ? '"' + s.replace(/"/g, '""') + '"'
+    : s;
+}
+
+btnExport.addEventListener('click', () => {
+  const vf = S.visibleFields;
+  const rows = S.filteredRows;
+  let csv = vf.map(csvEscape).join(',') + '\n';
+  for (let i = 0; i < rows.length; i++) {
+    csv += vf.map(f => csvEscape(rows[i][f])).join(',') + '\n';
+  }
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  link.download = 'qvd-export.csv';
+  link.click();
+  URL.revokeObjectURL(link.href);
+});
+
+// ════════════════════════════════════════════════════════════════
+// Progress helpers
+// ════════════════════════════════════════════════════════════════
+function showProgress(visible, label, pct) {
+  progressSec.classList.toggle('visible', visible);
+  if (label !== undefined) progressLabel.textContent = label;
+  if (pct   !== undefined) {
+    progressFill.style.width = pct + '%';
+    progressPct.textContent  = pct + '%';
+  }
+}
+
+// Re-render on window resize (virtual scroll dimensions change)
+window.addEventListener('resize', () => {
+  if (S.filteredRows.length) renderVisibleRows();
+});
+</script>
+</body>
+</html>
