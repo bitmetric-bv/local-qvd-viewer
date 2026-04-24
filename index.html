@@ -674,27 +674,48 @@ function parseQvd(buffer) {
   var colIndices = fields.map(function() { return new Int32Array(noOfRecords); });
   // symCounts[fi][si] = number of rows with symbol index si; last slot = out-of-range (empty)
   var symCounts  = fields.map(function(f) { return new Int32Array(f.noOfSymbols + 1); });
-  var reportEvery = Math.max(1, Math.floor(noOfRecords / 80));
 
-  for (var r = 0; r < noOfRecords; r++) {
-    var rOff = recBase + r * recordByteSize;
+  // Precompute per-field extraction params so the inner loop does 1-4 byte reads
+  // instead of a bit-by-bit loop (typically 10-20× fewer operations per field).
+  var fieldParams = fields.map(function(f) {
+    var byteOff  = f.bitOffset >>> 3;
+    var bitShift = f.bitOffset & 7;
+    var numBytes = f.bitWidth === 0 ? 0 : ((bitShift + f.bitWidth + 7) >>> 3);
+    var mask     = f.bitWidth >= 32 ? 0xFFFFFFFF : (f.bitWidth === 0 ? 0 : (1 << f.bitWidth) - 1);
+    return { byteOff: byteOff, bitShift: bitShift, numBytes: numBytes, mask: mask, bias: f.bias, bitWidth: f.bitWidth, bitOffset: f.bitOffset };
+  });
 
-    for (var fi = 0; fi < fields.length; fi++) {
-      var field = fields[fi];
-      var idx   = 0;
-      for (var b = 0; b < field.bitWidth; b++) {
-        var abs = field.bitOffset + b;
-        if (u8[rOff + (abs >> 3)] & (1 << (abs & 7))) idx |= (1 << b);
+  // Field-major loop: hoist colIndices[fi] / symCounts[fi] outside the row loop.
+  for (var fi = 0; fi < fields.length; fi++) {
+    var fp   = fieldParams[fi];
+    var col  = colIndices[fi];
+    var cnt  = symCounts[fi];
+    var cntN = cnt.length - 1;
+
+    for (var r = 0; r < noOfRecords; r++) {
+      var base = recBase + r * recordByteSize + fp.byteOff;
+      var si;
+      if (fp.numBytes <= 4) {
+        var word = 0;
+        if (fp.numBytes >= 1) word  = u8[base];
+        if (fp.numBytes >= 2) word |= u8[base + 1] << 8;
+        if (fp.numBytes >= 3) word |= u8[base + 2] << 16;
+        if (fp.numBytes >= 4) word |= u8[base + 3] << 24;
+        si = ((word >>> fp.bitShift) & fp.mask) + fp.bias;
+      } else {
+        // Rare fallback: field spans 5 bytes (large bitWidth with non-byte-aligned offset)
+        var idx = 0;
+        for (var b = 0; b < fp.bitWidth; b++) {
+          var abs = fp.bitOffset + b;
+          if (u8[recBase + r * recordByteSize + (abs >>> 3)] & (1 << (abs & 7))) idx |= (1 << b);
+        }
+        si = idx + fp.bias;
       }
-      var si = idx + field.bias; // resolved symbol index; negative = null/empty
-      colIndices[fi][r] = si;
-      var cnt = symCounts[fi];
-      if (si >= 0 && si < cnt.length - 1) cnt[si]++; else cnt[cnt.length - 1]++;
+      col[r] = si;
+      if (si >= 0 && si < cntN) cnt[si]++; else cnt[cntN]++;
     }
 
-    if (r % reportEvery === 0) {
-      self.postMessage({ type: 'progress', pct: 20 + Math.round((r / noOfRecords) * 78) });
-    }
+    self.postMessage({ type: 'progress', pct: 20 + Math.round(((fi + 1) / fields.length) * 78) });
   }
 
   self.postMessage({ type: 'progress', pct: 100 });
@@ -857,10 +878,17 @@ function onParsed(symbols, colIndices, symCounts, fields, meta) {
     const counts  = symCounts[fi];
     const n       = syms.length;
     const entries = [];
+    // Merge all empty-string representations into one entry to avoid duplicates
+    // that would break the "all selected = no filter" check in toggleValue.
+    let emptyCount = counts[n]; // out-of-range rows → empty string
     for (let si = 0; si < n; si++) {
-      if (counts[si] > 0) entries.push([syms[si] == null ? '' : String(syms[si]), counts[si]]);
+      if (counts[si] > 0) {
+        const k = syms[si] == null ? '' : String(syms[si]);
+        if (k === '') emptyCount += counts[si];
+        else entries.push([k, counts[si]]);
+      }
     }
-    if (counts[n] > 0) entries.push(['', counts[n]]); // out-of-range rows → empty string
+    if (emptyCount > 0) entries.push(['', emptyCount]);
     if (f.numeric) {
       entries.sort((a, b) => { const an = parseFloat(a[0]), bn = parseFloat(b[0]); return isNaN(an) ? 1 : isNaN(bn) ? -1 : an - bn; });
     } else {
@@ -1452,6 +1480,8 @@ function closeFilterDropdown() {
   fdAnchorBtn = null;
 }
 
+const FD_MAX_RENDER = 300; // max DOM nodes — rendering 10K+ items hangs the browser
+
 function populateDropdownList(query) {
   const entries = getUniqueValues(fdField);
   const sel     = S.colFilters[fdField];           // Set or undefined
@@ -1461,14 +1491,17 @@ function populateDropdownList(query) {
     ? entries.filter(([v]) => v.toLowerCase().includes(q))
     : entries;
 
-  // "Select all" state: checked when no filter set, or all visible entries selected
+  // "Select all" state is based on ALL filtered matches, not just the rendered slice
   const allChecked = !sel || filtered.every(([v]) => sel.has(v));
   fdSelectAll.checked       = allChecked;
   fdSelectAll.indeterminate = !allChecked && filtered.some(([v]) => !sel || sel.has(v));
 
+  // Render only the first FD_MAX_RENDER items to avoid DOM-size freezes
+  const rendered = filtered.length > FD_MAX_RENDER ? filtered.slice(0, FD_MAX_RENDER) : filtered;
+
   fdList.innerHTML = '';
   const frag = document.createDocumentFragment();
-  filtered.forEach(([val, count]) => {
+  rendered.forEach(([val, count]) => {
     const checked = !sel || sel.has(val);
     const item = document.createElement('label');
     item.className = 'fd-item';
@@ -1493,7 +1526,7 @@ function populateDropdownList(query) {
     frag.appendChild(item);
   });
   fdList.appendChild(frag);
-  updateFdStatus(filtered.length, entries.length);
+  updateFdStatus(rendered.length, filtered.length, entries.length);
 }
 
 function toggleValue(val, checked) {
@@ -1522,8 +1555,14 @@ function toggleValue(val, checked) {
   applyFilters();
 }
 
-function updateFdStatus(shown, total) {
-  fdStatus.textContent = shown < total ? shown + ' / ' + total + ' waarden' : total + ' waarden';
+function updateFdStatus(rendered, filtered, total) {
+  if (filtered < total) {
+    fdStatus.textContent = filtered + ' / ' + total + ' waarden';
+  } else if (rendered < total) {
+    fdStatus.textContent = 'Eerste ' + rendered + ' van ' + total + ' — zoek om te filteren';
+  } else {
+    fdStatus.textContent = total + ' waarden';
+  }
 }
 
 function refreshFilterIcon(fname) {
