@@ -240,7 +240,7 @@
     .fd-item-count { font-size: 10px; color: #bbb; flex-shrink: 0; }
     .fd-footer {
       padding: 6px 10px; border-top: 1px solid #eee;
-      flex-shrink: 0; display: flex; justify-content: space-between; align-items: center;
+      flex-shrink: 0; display: flex; align-items: center;
     }
     .fd-clear-btn {
       font-size: 11px; padding: 3px 9px; border: 1px solid #ddd;
@@ -256,8 +256,6 @@
     body.dark .fd-item:hover { background: #252540; }
     body.dark .fd-item-label { color: #ccc; }
     body.dark .fd-footer { border-color: #2a2a4a; }
-    body.dark .fd-clear-btn { background: #1a1a2e; border-color: #2a2a4a; color: #bbb; }
-    body.dark .fd-clear-btn:hover { background: #252540; }
 
     /* Data rows */
     tbody tr:nth-child(even) td { background: #f9f9f9; }
@@ -270,6 +268,31 @@
     td:last-child { border-right: none; }
     td.num { text-align: right; font-variant-numeric: tabular-nums; }
     tr.virt-spacer td { padding: 0; border: none; background: transparent !important; }
+    td.td-selected { background: #e8f0fe !important; cursor: pointer; }
+    body.dark td.td-selected { background: #1a2535 !important; }
+
+    /* Table selection bar */
+    .tsel-bar {
+      padding: 5px 12px; background: #e8f0fe; border-bottom: 1px solid #c5d8f5;
+      display: flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 12px;
+    }
+    .tsel-info { flex: 1; color: #1a4a8a; }
+    .tsel-apply-btn {
+      padding: 4px 12px; background: #1f5cbf; color: white; border: none;
+      border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+    }
+    .tsel-apply-btn:hover { background: #174da3; }
+    .tsel-clear-btn {
+      padding: 2px 7px; background: transparent; border: 1px solid #a0b8d8;
+      border-radius: 3px; cursor: pointer; color: #555; font-size: 13px; font-family: inherit;
+    }
+    .tsel-clear-btn:hover { background: #d2e3fc; }
+    body.dark .tsel-bar { background: #1a2535; border-color: #2a3d5a; }
+    body.dark .tsel-info { color: #8ab4e8; }
+    body.dark .tsel-apply-btn { background: #2a5ab0; }
+    body.dark .tsel-apply-btn:hover { background: #1f4a98; }
+    body.dark .tsel-clear-btn { border-color: #3a4f6a; color: #aaa; }
+    body.dark .tsel-clear-btn:hover { background: #1f2e42; }
 
     /* Empty / loading states */
     .table-placeholder {
@@ -461,7 +484,183 @@
     body.dark .stats-row th.has-pin:hover { background: #122012; }
     body.dark .stats-cell-type { color: #4caf50; }
     body.dark .stats-cell-value { color: #66bb6a; }
+
+    /* ── Column header: filter-active indicator ── */
+    .thead-headers th.col-filtered {
+      box-shadow: inset 0 -2px 0 #e65100;
+    }
+
+    /* ── Column header context menu ── */
+    .col-ctx-menu {
+      position: fixed; z-index: 600; background: white;
+      border: 1px solid #ddd; border-radius: 6px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.14);
+      min-width: 176px; padding: 4px 0; overflow: hidden;
+    }
+    .col-ctx-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 14px; font-size: 13px; color: #333;
+      cursor: pointer; user-select: none;
+    }
+    .col-ctx-item:hover { background: #f0f7f0; }
+    .col-ctx-item.ctx-active { font-weight: 600; color: #2e7d32; }
+    .col-ctx-item.ctx-muted { color: #999; font-style: italic; }
+    .col-ctx-item.ctx-danger { color: #c62828; }
+    .col-ctx-item.ctx-danger:hover { background: #fff5f5; }
+    .col-ctx-sep { height: 1px; background: #eee; margin: 4px 0; }
+    .col-ctx-icon { font-size: 11px; width: 14px; text-align: center; flex-shrink: 0; opacity: 0.65; }
+    .col-ctx-item.ctx-active .col-ctx-icon { opacity: 1; }
+    body.dark .col-ctx-menu { background: #1a1a2e; border-color: #2a2a4a; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+    body.dark .col-ctx-item { color: #ccc; }
+    body.dark .col-ctx-item:hover { background: #182818; }
+    body.dark .col-ctx-item.ctx-active { color: #66bb6a; }
+    body.dark .col-ctx-item.ctx-danger { color: #ef9a9a; }
+    body.dark .col-ctx-item.ctx-danger:hover { background: #2a1a1a; }
+    body.dark .col-ctx-sep { background: #252540; }
+
+    /* ── Column format button ── */
+    .th-fmt-btn {
+      flex-shrink: 0; padding: 2px 3px; border: none; background: none;
+      cursor: pointer; color: #ccc; border-radius: 3px; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .th-fmt-btn:hover { background: rgba(0,0,0,0.08); color: #1565c0; }
+    .th-fmt-btn.has-fmt { color: #1565c0; }
+    body.dark .th-fmt-btn { color: #555; }
+    body.dark .th-fmt-btn:hover { background: rgba(255,255,255,0.08); color: #64b5f6; }
+    body.dark .th-fmt-btn.has-fmt { color: #64b5f6; }
+    th.th-col-selected .th-inner { background: rgba(25,118,210,0.13); border-radius: 3px; }
+    body.dark th.th-col-selected .th-inner { background: rgba(100,181,246,0.16); }
+
+    /* ── Column format popup ── */
+    .fmt-popup {
+      position: fixed; z-index: 502; background: white;
+      border: 1px solid #ddd; border-radius: 6px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.14);
+      width: 260px; overflow: hidden;
+    }
+    .fmt-popup-title {
+      padding: 8px 12px; background: #f4f4f4; border-bottom: 1px solid #eee;
+      font-size: 12px; font-weight: 600; color: #444;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .fmt-popup-body { padding: 10px 12px 6px; }
+    .fmt-section-label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.6px; color: #888; margin-bottom: 6px;
+    }
+    .fmt-pills { display: flex; flex-wrap: wrap; gap: 4px; }
+    .fmt-pill {
+      padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: 500;
+      cursor: pointer; border: 1px solid #d0d0d0; background: white; color: #555;
+      font-family: inherit; transition: background 0.1s;
+    }
+    .fmt-pill:hover { background: #f5f5f5; border-color: #aaa; }
+    .fmt-pill.active { background: #1f1f1f; color: white; border-color: #1f1f1f; }
+    .fmt-popup-footer {
+      padding: 8px 12px; border-top: 1px solid #eee; display: flex; justify-content: flex-end;
+    }
+    .fmt-reset-btn {
+      font-size: 11px; padding: 4px 10px; border: 1px solid #d0d0d0;
+      border-radius: 3px; cursor: pointer; background: white; color: #555; font-family: inherit;
+    }
+    .fmt-reset-btn:hover { background: #f5f5f5; border-color: #aaa; }
+    body.dark .fmt-popup { background: #1a1a2e; border-color: #2a2a4a; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+    body.dark .fmt-popup-title { background: #12122a; border-color: #2a2a4a; color: #ccc; }
+    body.dark .fmt-section-label { color: #666; }
+    body.dark .fmt-pill { background: #1a1a2e; border-color: #2a2a4a; color: #bbb; }
+    body.dark .fmt-pill:hover { background: #252540; border-color: #4a4a7a; }
+    body.dark .fmt-pill.active { background: #e0e0e0; color: #111; border-color: #e0e0e0; }
+    body.dark .fmt-popup-footer { border-color: #2a2a4a; }
+    body.dark .fmt-reset-btn { background: #1a1a2e; border-color: #2a2a4a; color: #bbb; }
+    body.dark .fmt-reset-btn:hover { background: #252540; }
+
+    /* ── Export modal ── */
+    .export-overlay {
+      position: fixed; inset: 0; z-index: 1000;
+      background: rgba(0,0,0,0.52);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .export-modal {
+      background: white; border-radius: 8px;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.22);
+      width: 560px; max-width: calc(100vw - 32px);
+      max-height: calc(100vh - 48px); overflow-y: auto;
+      padding: 24px 28px; font-family: inherit;
+    }
+    .export-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .export-title { font-size: 16px; font-weight: 700; color: #222; }
+    .export-close {
+      cursor: pointer; color: #888; font-size: 22px; line-height: 1;
+      padding: 2px 6px; border-radius: 4px; border: none; background: none;
+    }
+    .export-close:hover { background: #f0f0f0; color: #333; }
+    .export-subtitle { font-size: 12px; color: #999; margin-bottom: 22px; }
+    .export-section { margin-bottom: 20px; }
+    .export-section-label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.6px; color: #888; margin-bottom: 10px;
+    }
+    .export-pills { display: flex; flex-wrap: wrap; gap: 5px; }
+    .export-pill {
+      padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 500;
+      cursor: pointer; border: 1px solid #d0d0d0; background: white; color: #555;
+      font-family: inherit; transition: background 0.1s, border-color 0.1s; white-space: nowrap;
+    }
+    .export-pill:hover { background: #f5f5f5; border-color: #aaa; }
+    .export-pill.active { background: #1f1f1f; color: white; border-color: #1f1f1f; }
+    .export-opt-row {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;
+    }
+    .export-opt-row:last-child { margin-bottom: 0; }
+    .export-opt-label { font-size: 12px; color: #666; min-width: 110px; flex-shrink: 0; }
+    .export-toggle-label {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: #444; cursor: pointer; user-select: none;
+    }
+    .export-toggle-label input { cursor: pointer; }
+    .export-custom-delim {
+      width: 60px; padding: 4px 8px; border: 1px solid #d0d0d0; border-radius: 4px;
+      font-size: 12px; font-family: inherit; color: #333;
+    }
+    .export-custom-delim:focus { outline: none; border-color: #4caf50; }
+    .export-file-row { display: flex; align-items: stretch; }
+    .export-filename {
+      flex: 1; padding: 7px 10px; border: 1px solid #d0d0d0; border-radius: 4px 0 0 4px;
+      font-size: 13px; font-family: inherit; color: #333;
+    }
+    .export-filename:focus { outline: none; border-color: #4caf50; }
+    .export-ext {
+      padding: 7px 10px; background: #f4f4f4; border: 1px solid #d0d0d0; border-left: none;
+      border-radius: 0 4px 4px 0; font-size: 13px; color: #888; white-space: nowrap; user-select: none;
+    }
+    .export-footer {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-top: 24px; padding-top: 16px; border-top: 1px solid #eee; gap: 12px; flex-wrap: wrap;
+    }
+    .export-footer-btns { display: flex; gap: 8px; margin-left: auto; }
+    .export-progress-text { font-size: 12px; color: #666; }
+    body.dark .export-modal { background: #13132a; }
+    body.dark .export-title { color: #e0e0e0; }
+    body.dark .export-close { color: #666; }
+    body.dark .export-close:hover { background: #252540; color: #e0e0e0; }
+    body.dark .export-subtitle { color: #555; }
+    body.dark .export-section-label { color: #666; }
+    body.dark .export-pill { background: #1a1a2e; border-color: #2a2a4a; color: #bbb; }
+    body.dark .export-pill:hover { background: #252540; border-color: #4a4a7a; }
+    body.dark .export-pill.active { background: #e0e0e0; color: #111; border-color: #e0e0e0; }
+    body.dark .export-opt-label { color: #888; }
+    body.dark .export-toggle-label { color: #ccc; }
+    body.dark .export-custom-delim { background: #0d0d1a; border-color: #2a2a4a; color: #ccc; }
+    body.dark .export-filename { background: #0d0d1a; border-color: #2a2a4a; color: #ccc; }
+    body.dark .export-ext { background: #1a1a2e; border-color: #2a2a4a; color: #666; }
+    body.dark .export-footer { border-color: #252540; }
+    body.dark .export-progress-text { color: #888; }
   </style>
+  <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -528,12 +727,18 @@
   <div class="toolbar">
     <input class="search-global" id="globalSearch" type="text" placeholder="Search in all fields…" disabled>
     <button class="btn btn-outline" id="btnColumns" disabled>Columns</button>
-    <button class="btn btn-outline" id="btnDark">🌙 Dark</button>
-    <button class="btn btn-dark" id="btnExport" disabled>⬇ Export CSV</button>
+<button class="btn btn-dark" id="btnExport" disabled>⬇ Export</button>
   </div>
 
   <!-- Active filter bar -->
   <div class="filter-bar" id="filterBar"></div>
+
+  <!-- Table selection bar (ctrl+click pending) -->
+  <div class="tsel-bar" id="tselBar" style="display:none">
+    <span class="tsel-info" id="tselInfo"></span>
+    <button class="tsel-apply-btn" id="tselApplyBtn">Filter toepassen</button>
+    <button class="tsel-clear-btn" id="tselClearBtn">✕</button>
+  </div>
 
   <!-- Table -->
   <div class="table-wrap" id="tableWrap">
@@ -562,6 +767,54 @@
   <div id="spBody"></div>
 </div>
 
+<!-- ══════════════ COLUMN FORMAT POPUP ══════════════ -->
+<div id="fmtPopup" class="fmt-popup" style="display:none">
+  <div class="fmt-popup-title" id="fmtPopupTitle"></div>
+  <div class="fmt-popup-body">
+    <div class="fmt-section-label">Decimals</div>
+    <div class="fmt-pills" id="fmtDecPills">
+      <button class="fmt-pill" data-dec="auto">Auto</button>
+      <button class="fmt-pill" data-dec="0">0</button>
+      <button class="fmt-pill" data-dec="1">1</button>
+      <button class="fmt-pill" data-dec="2">2</button>
+      <button class="fmt-pill" data-dec="3">3</button>
+      <button class="fmt-pill" data-dec="4">4</button>
+    </div>
+    <div class="fmt-section-label" style="margin-top:10px">Thousands separator</div>
+    <div class="fmt-pills" id="fmtThsPills">
+      <button class="fmt-pill" data-ths="on">On</button>
+      <button class="fmt-pill" data-ths="off">Off</button>
+    </div>
+  </div>
+  <div class="fmt-popup-footer">
+    <button class="fmt-reset-btn" id="fmtResetBtn">Reset to default</button>
+  </div>
+</div>
+
+<!-- ══════════════ COLUMN CONTEXT MENU ══════════════ -->
+<div id="colCtxMenu" class="col-ctx-menu" style="display:none">
+  <div class="col-ctx-item" id="ctxSortAsc">
+    <span class="col-ctx-icon">↑</span> Sort ascending
+  </div>
+  <div class="col-ctx-item" id="ctxSortDesc">
+    <span class="col-ctx-icon">↓</span> Sort descending
+  </div>
+  <div class="col-ctx-item ctx-danger" id="ctxSortClear" style="display:none">
+    <span class="col-ctx-icon">✕</span> Clear sort
+  </div>
+  <div class="col-ctx-sep"></div>
+  <div class="col-ctx-item" id="ctxFilter">
+    <span class="col-ctx-icon">▼</span> Filter…
+  </div>
+  <div class="col-ctx-sep ctx-num-only"></div>
+  <div class="col-ctx-item ctx-num-only" id="ctxStats">
+    <span class="col-ctx-icon">ℹ</span> Statistics
+  </div>
+  <div class="col-ctx-item ctx-num-only" id="ctxFormat">
+    <span class="col-ctx-icon">#</span> Format…
+  </div>
+</div>
+
 <!-- ══════════════ COLUMN FILTER DROPDOWN ══════════════ -->
 <div id="filterDropdown" class="filter-dropdown" style="display:none">
   <div class="fd-search-wrap">
@@ -575,7 +828,6 @@
   </div>
   <div class="fd-list" id="fdList"></div>
   <div class="fd-footer">
-    <button id="fdClearBtn" class="fd-clear-btn">Filter wissen</button>
     <span class="fd-status" id="fdStatus"></span>
   </div>
 </div>
@@ -595,6 +847,84 @@
     <button class="chooser-action-btn" id="chooserFirst20">First 20</button>
   </div>
   <div class="chooser-list" id="chooserList"></div>
+</div>
+
+<!-- ══════════════ EXPORT MODAL ══════════════ -->
+<div id="exportOverlay" class="export-overlay" style="display:none">
+  <div class="export-modal">
+    <div class="export-header">
+      <span class="export-title">Export data</span>
+      <button class="export-close" id="exportClose">×</button>
+    </div>
+    <div class="export-subtitle" id="exportSubtitle">Exporting — rows, — columns</div>
+
+    <!-- Format -->
+    <div class="export-section">
+      <div class="export-section-label">Format</div>
+      <div class="export-pills" id="exportFmtPills">
+        <button class="export-pill active" data-fmt="xlsx">XLSX</button>
+        <button class="export-pill" data-fmt="csv">CSV</button>
+        <button class="export-pill" data-fmt="txt">TXT</button>
+      </div>
+    </div>
+
+    <!-- Options -->
+    <div class="export-section">
+      <div class="export-section-label">Options</div>
+      <div class="export-opt-row">
+        <label class="export-toggle-label">
+          <input type="checkbox" id="exportHeader" checked>
+          Include header row
+        </label>
+      </div>
+      <div id="exportCsvOpts" style="display:none">
+        <div class="export-opt-row">
+          <span class="export-opt-label">Delimiter</span>
+          <div class="export-pills" id="exportDelimPills">
+            <button class="export-pill active" data-delim="comma">Comma ( , )</button>
+            <button class="export-pill" data-delim="semi">Semicolon ( ; )</button>
+            <button class="export-pill" data-delim="tab">Tab (\t)</button>
+            <button class="export-pill" data-delim="pipe">Pipe ( | )</button>
+            <button class="export-pill" data-delim="custom">Custom</button>
+          </div>
+          <input type="text" id="exportCustomDelim" class="export-custom-delim" maxlength="5" placeholder="char" style="display:none">
+        </div>
+        <div class="export-opt-row">
+          <span class="export-opt-label">Text qualifier</span>
+          <div class="export-pills" id="exportQualPills">
+            <button class="export-pill" data-qual="none">None</button>
+            <button class="export-pill active" data-qual="dquote">Double quote ( " )</button>
+            <button class="export-pill" data-qual="squote">Single quote ( ' )</button>
+          </div>
+        </div>
+        <div class="export-opt-row">
+          <span class="export-opt-label">Line ending</span>
+          <div class="export-pills" id="exportLePills">
+            <button class="export-pill active" data-le="crlf">Windows (CRLF)</button>
+            <button class="export-pill" data-le="lf">Unix (LF)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- File -->
+    <div class="export-section">
+      <div class="export-section-label">File</div>
+      <div class="export-file-row">
+        <input type="text" id="exportFilename" class="export-filename" value="export">
+        <span class="export-ext" id="exportExt">.xlsx</span>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="export-footer">
+      <span class="export-progress-text" id="exportProgressText" style="display:none">Preparing export…</span>
+      <div class="export-footer-btns">
+        <button class="btn btn-outline" id="exportCancel">Cancel</button>
+        <button class="btn btn-dark" id="exportGo">Export</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -638,7 +968,13 @@ function parseQvd(buffer) {
 
   var noOfRecords    = tagNum(xmlStr, 'NoOfRecords');
   var recordByteSize = tagNum(xmlStr, 'RecordByteSize');
-  var createdUtc     = tagVal(xmlStr, 'CreatedUtcTime') || tagVal(xmlStr, 'CreateUtcDate') || '';
+  var createdUtc = tagVal(xmlStr, 'CreatedUtcTime')
+    || (function() {
+         var d = tagVal(xmlStr, 'CreateUtcDate');
+         var t = tagVal(xmlStr, 'CreateUtcTime');
+         return d ? (t ? d + 'T' + t : d) : '';
+       })()
+    || '';
 
   // Split on <QvdFieldHeader> blocks
   var fieldBlocks = [];
@@ -773,6 +1109,68 @@ function parseQvd(buffer) {
 `;
 
 // ════════════════════════════════════════════════════════════════
+// Export worker — builds CSV/TXT off the main thread
+// ════════════════════════════════════════════════════════════════
+const EXPORT_WORKER_SRC = `
+self.onmessage = function(e) {
+  var d = e.data;
+  var colData         = d.colData;
+  var filteredIndices = d.filteredIndices;
+  var fieldNames      = d.fieldNames;
+  var fieldNumeric    = d.fieldNumeric;
+  var delimiter       = d.options.delimiter;
+  var qualifier       = d.options.qualifier;
+  var lineEnding      = d.options.lineEnding;
+  var includeHeader   = d.options.includeHeader;
+  var totalRows       = filteredIndices.length;
+  var numCols         = colData.length;
+  var lines           = [];
+
+  function escapeVal(s, isNum) {
+    if (isNum || !qualifier) return s;
+    var escaped = s.split(qualifier).join(qualifier + qualifier);
+    return qualifier + escaped + qualifier;
+  }
+
+  if (includeHeader) {
+    var hdr = new Array(fieldNames.length);
+    for (var j = 0; j < fieldNames.length; j++) hdr[j] = escapeVal(fieldNames[j], false);
+    lines.push(hdr.join(delimiter));
+  }
+
+  var CHUNK = 5000;
+  var pos = 0;
+
+  function tick() {
+    var end = pos + CHUNK < totalRows ? pos + CHUNK : totalRows;
+    for (var i = pos; i < end; i++) {
+      var rowIdx = filteredIndices[i];
+      var cells = new Array(numCols);
+      for (var j = 0; j < numCols; j++) {
+        var syms   = colData[j].symbols;
+        var idxArr = colData[j].indices;
+        var si     = idxArr[rowIdx];
+        var raw    = (si >= 0 && si < syms.length) ? syms[si] : '';
+        var valStr = raw == null ? '' : String(raw);
+        cells[j] = escapeVal(valStr, fieldNumeric[j] && valStr !== '');
+      }
+      lines.push(cells.join(delimiter));
+    }
+    pos = end;
+    self.postMessage({ type: 'progress', processed: pos, total: totalRows });
+    if (pos < totalRows) {
+      setTimeout(tick, 0);
+    } else {
+      var content = lines.length > 0 ? lines.join(lineEnding) + lineEnding : '';
+      self.postMessage({ type: 'done', content: content });
+    }
+  }
+
+  tick();
+};
+`;
+
+// ════════════════════════════════════════════════════════════════
 // App state
 // ════════════════════════════════════════════════════════════════
 const S = {
@@ -788,10 +1186,12 @@ const S = {
   colFilters:      {},    // field name → Set of selected values (undefined = no filter)
   uniqueValues:    {},    // field name → [[strVal, count], ...] (lazy)
   pinnedAgg:       {},    // field name → 'count'|'sum'|'avg'|'min'|'max'
+  colFormats:      {},    // field name → { decimals: number|null, thousands: bool }
   globalSearch:    '',
   sortField:       null,
   sortDir:         0,     // 0=none 1=asc -1=desc
   worker:          null,
+  sourceFilename:  '',    // QVD filename without extension, used for export default name
 };
 
 // Look up the value for a given row index and field index
@@ -822,7 +1222,6 @@ const kpiColumns     = $('kpiColumns');
 const kpiFields      = $('kpiFields');
 const globalSearch   = $('globalSearch');
 const btnColumns     = $('btnColumns');
-const btnDark        = $('btnDark');
 const btnExport      = $('btnExport');
 const tableWrap      = $('tableWrap');
 const placeholder    = $('placeholder');
@@ -850,6 +1249,7 @@ fileInput.addEventListener('change', e => { if (e.target.files[0]) loadFile(e.ta
 function loadFile(file) {
   if (!file.name.match(/\.qvd$/i)) { alert('Please select a .qvd file.'); return; }
 
+  S.sourceFilename = file.name.replace(/\.qvd$/i, '');
   fileNameDisp.textContent = file.name;
   fileNameDisp.classList.add('visible');
   showProgress(true, 'Reading file…', 0);
@@ -907,6 +1307,7 @@ function onParsed(symbols, colIndices, symCounts, fields, meta) {
   S.globalSearch = '';
   S.sortField    = null;
   S.sortDir      = 0;
+  colSelSet.clear();
 
   // Build name → index map
   S.fieldIndex = {};
@@ -953,9 +1354,14 @@ function onParsed(symbols, colIndices, symCounts, fields, meta) {
   // Update metadata sidebar
   $('metaFields').textContent  = meta.noOfFields.toLocaleString();
   $('metaRows').textContent    = meta.noOfRecords.toLocaleString();
-  $('metaCreated').textContent = meta.createdUtc
-    ? new Date(meta.createdUtc).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-    : '—';
+  if (meta.createdUtc) {
+    const d = new Date(meta.createdUtc);
+    $('metaCreated').textContent = isNaN(d)
+      ? meta.createdUtc
+      : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  } else {
+    $('metaCreated').textContent = '—';
+  }
   metaCard.classList.add('visible');
 
   // KPIs
@@ -1154,36 +1560,25 @@ function renderTable() {
       sortEl.textContent = '↕';
     }
 
-    // Stats button — only for numeric fields
-    const isNum = S.fields.find(f => f.name === fname)?.numeric;
-    if (isNum) {
-      const statsBtn = document.createElement('button');
-      statsBtn.className = 'th-stats-btn' + (S.pinnedAgg[fname] ? ' has-pin' : '');
-      statsBtn.title = 'Statistieken';
-      statsBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="6" cy="6" r="5.25" stroke="currentColor" stroke-width="1.2" fill="none"/><rect x="5.4" y="5" width="1.2" height="4"/><rect x="5.4" y="3" width="1.2" height="1.2"/></svg>';
-      statsBtn.addEventListener('click', e => {
-        e.stopPropagation();
-        openStatsPopup(fname, statsBtn);
-      });
-      inner.appendChild(nameEl);
-      inner.appendChild(sortEl);
-      inner.appendChild(statsBtn);
-    } else {
-      inner.appendChild(nameEl);
-      inner.appendChild(sortEl);
-    }
-
-    // Filter icon button — separate click, does not trigger sort
-    const filterBtn = document.createElement('button');
-    filterBtn.className = 'th-filter-btn' + (S.colFilters[fname] ? ' active' : '');
-    filterBtn.title = 'Filteren';
-    filterBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor"><path d="M1 1h10L7.5 5.5V11l-3-1.5V5.5z"/></svg>';
-    filterBtn.addEventListener('click', e => {
-      e.stopPropagation();
-      openFilterDropdown(fname, filterBtn);
+    inner.appendChild(nameEl);
+    inner.appendChild(sortEl);
+    inner.addEventListener('click', e => {
+      if (e.ctrlKey) {
+        e.preventDefault();
+        colSelSet.has(fname) ? colSelSet.delete(fname) : colSelSet.add(fname);
+        th.classList.toggle('th-col-selected', colSelSet.has(fname));
+        return;
+      }
+      cycleSort(fname);
     });
-    inner.appendChild(filterBtn);
-    inner.addEventListener('click', () => cycleSort(fname));
+    inner.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      openColCtxMenu(fname, th, e.clientX, e.clientY);
+    });
+
+    th.dataset.fname = fname;
+    if (S.colFilters[fname]) th.classList.add('col-filtered');
+    if (colSelSet.has(fname)) th.classList.add('th-col-selected');
 
     const handle = document.createElement('div');
     handle.className = 'resize-handle';
@@ -1237,16 +1632,61 @@ function renderVisibleRows() {
   tbody.appendChild(frag);
 }
 
+function formatCell(val, fi) {
+  if (val === '' || val == null) return '';
+  const fname = S.fields[fi]?.name;
+  const fmt = fname ? S.colFormats[fname] : null;
+  if (!fmt) return String(val);
+  const n = parseStatNum(val);
+  if (isNaN(n)) return String(val);
+  const opts = { useGrouping: fmt.thousands };
+  if (fmt.decimals !== null) {
+    opts.minimumFractionDigits = fmt.decimals;
+    opts.maximumFractionDigits = fmt.decimals;
+  } else {
+    opts.minimumFractionDigits = 0;
+    opts.maximumFractionDigits = 6;
+  }
+  return n.toLocaleString(undefined, opts);
+}
+
 function buildRow(rowIdx, vf, vfIdx) {
   const tr = document.createElement('tr');
   for (let i = 0; i < vf.length; i++) {
-    const fi  = vfIdx[i];
-    const val = getVal(rowIdx, fi);
-    const td  = document.createElement('td');
-    if (S.fields[fi] && S.fields[fi].numeric && val !== '' && val != null) {
-      td.className = 'num';
-    }
-    td.textContent = val == null ? '' : val;
+    const fi    = vfIdx[i];
+    const fname = vf[i];
+    const val   = getVal(rowIdx, fi);
+    const td    = document.createElement('td');
+    const isNum = S.fields[fi] && S.fields[fi].numeric && val !== '' && val != null;
+    const isSel = tableSelField === fname && tableSelValues.has(val);
+    td.className = (isNum ? 'num' : '') + (isSel ? (isNum ? ' td-selected' : 'td-selected') : '');
+    td.textContent = formatCell(val, fi);
+
+    td.addEventListener('click', e => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      if (tableSelField !== fname) {
+        clearTableSel();
+        tableSelField = fname;
+      }
+      if (tableSelValues.has(val)) {
+        tableSelValues.delete(val);
+        td.classList.remove('td-selected');
+      } else {
+        tableSelValues.add(val);
+        td.classList.add('td-selected');
+      }
+      if (!tableSelValues.size) clearTableSel();
+      else updateTselBar();
+    });
+
+    td.addEventListener('dblclick', () => {
+      clearTableSel();
+      S.colFilters[fname] = new Set([val]);
+      refreshFilterIcon(fname);
+      applyFilters();
+    });
+
     tr.appendChild(td);
   }
   return tr;
@@ -1322,9 +1762,26 @@ const AGG_DEFS = [
 function parseStatNum(v) {
   if (v === '' || v == null) return NaN;
   if (typeof v === 'number') return v;
-  // Strip thousand-separators (both . and , variants) then parse
-  const s = String(v).trim().replace(/[^\d\-+.eE]/g, '');
-  return s === '' ? NaN : +s;
+  const s = String(v).trim();
+  if (s === '') return NaN;
+
+  const hasDot   = s.indexOf('.') !== -1;
+  const hasComma = s.indexOf(',') !== -1;
+
+  if (hasDot && hasComma) {
+    // Both present: whichever is last is the decimal separator
+    return s.lastIndexOf('.') > s.lastIndexOf(',')
+      ? parseFloat(s.replace(/,/g, ''))                     // "1,234.56" → 1234.56
+      : parseFloat(s.replace(/\./g, '').replace(',', '.')); // "1.234,56" → 1234.56
+  }
+  if (hasComma) {
+    // Comma only: decimal if ≤2 digits follow, otherwise thousand-separator
+    const tail = s.split(',').pop();
+    return tail.length <= 2
+      ? parseFloat(s.replace(',', '.'))   // "8874,92" → 8874.92
+      : parseFloat(s.replace(/,/g, ''));  // "904,038" → 904038
+  }
+  return parseFloat(s.replace(/[^\d\-+.eE]/g, ''));
 }
 
 function computeStats(fname, rowIndices) {
@@ -1348,9 +1805,21 @@ function computeStats(fname, rowIndices) {
   };
 }
 
-function fmtStat(v, key) {
+function fmtStat(v, key, fname) {
   if (v === null || v === undefined) return '—';
   if (key === 'count') return Math.round(v).toLocaleString();
+  const fmt = fname ? S.colFormats[fname] : null;
+  if (fmt) {
+    const opts = { useGrouping: fmt.thousands };
+    if (fmt.decimals !== null) {
+      opts.minimumFractionDigits = fmt.decimals;
+      opts.maximumFractionDigits = fmt.decimals;
+    } else {
+      opts.minimumFractionDigits = 0;
+      opts.maximumFractionDigits = 6;
+    }
+    return v.toLocaleString(undefined, opts);
+  }
   // Auto decimal places: keep up to 4, strip trailing zeros
   const abs = Math.abs(v);
   const dec = abs === 0 ? 0 : abs < 1 ? 4 : abs < 1000 ? 2 : abs < 1e6 ? 1 : 0;
@@ -1385,7 +1854,8 @@ function closeStatsPopup() {
 function refreshStatsPopup() {
   if (!spField) return;
   const stats = computeStats(spField, S.filteredIndices);
-  $('spTitle').textContent = spField;
+  const spCols = colSelSet.size > 1 && colSelSet.has(spField) ? colSelSet.size : 1;
+  $('spTitle').textContent = spCols > 1 ? spCols + ' kolommen' : spField;
   const body = $('spBody');
   body.innerHTML = '';
   AGG_DEFS.forEach(({ key, label }) => {
@@ -1400,24 +1870,23 @@ function refreshStatsPopup() {
 
     const val_el = document.createElement('span');
     val_el.className   = 'sp-value';
-    val_el.textContent = fmtStat(val, key);
+    val_el.textContent = fmtStat(val, key, spField);
 
     const pinBtn = document.createElement('button');
     pinBtn.className = 'sp-pin-btn' + (isPinned ? ' pinned' : '');
     pinBtn.title     = isPinned ? 'Losmaken' : 'Vastmaken';
     pinBtn.textContent = '📌';
     pinBtn.addEventListener('click', () => {
-      if (S.pinnedAgg[spField] === key) {
-        delete S.pinnedAgg[spField];
-      } else {
-        S.pinnedAgg[spField] = key;
-      }
+      const targets = (colSelSet.size > 1 && colSelSet.has(spField))
+        ? [...colSelSet]
+        : [spField];
+      const willPin = S.pinnedAgg[spField] !== key;
+      targets.forEach(f => {
+        if (willPin) S.pinnedAgg[f] = key;
+        else delete S.pinnedAgg[f];
+      });
       refreshStatsPopup();
       renderPinnedRow();
-      // Update has-pin class on the stats button in the header
-      headersRow.querySelectorAll('.th-stats-btn').forEach((btn, i) => {
-        if (S.visibleFields[i] === spField) btn.classList.toggle('has-pin', !!S.pinnedAgg[spField]);
-      });
     });
 
     row.appendChild(lbl);
@@ -1449,17 +1918,13 @@ function renderPinnedRow() {
       typeEl.textContent = def.abbr;
       const valEl = document.createElement('span');
       valEl.className   = 'stats-cell-value';
-      valEl.textContent = fmtStat(stats[agg], agg);
+      valEl.textContent = fmtStat(stats[agg], agg, fname);
       cell.appendChild(typeEl);
       cell.appendChild(valEl);
       th.appendChild(cell);
       th.addEventListener('click', () => {
         delete S.pinnedAgg[fname];
         renderPinnedRow();
-        // Sync has-pin on stats button
-        headersRow.querySelectorAll('.th-stats-btn').forEach((btn, i) => {
-          if (S.visibleFields[i] === fname) btn.classList.remove('has-pin');
-        });
       });
     }
     statsRow.appendChild(th);
@@ -1477,6 +1942,105 @@ document.addEventListener('mousedown', e => {
 }, true);
 
 // ════════════════════════════════════════════════════════════════
+// Column format popup
+// ════════════════════════════════════════════════════════════════
+let fmtField  = null;
+let fmtAnchor = null;
+
+function openFmtPopup(fname, anchorBtn) {
+  if (fmtField === fname && $('fmtPopup').style.display !== 'none') {
+    closeFmtPopup(); return;
+  }
+  closeFmtPopup();
+  fmtField  = fname;
+  fmtAnchor = anchorBtn;
+  const fmtCols = colSelSet.size > 1 && colSelSet.has(fname) ? colSelSet.size : 1;
+  $('fmtPopupTitle').textContent = fmtCols > 1 ? fmtCols + ' kolommen' : fname;
+  syncFmtPopup();
+
+  const rect = anchorBtn.getBoundingClientRect();
+  let left = rect.left;
+  let top  = rect.bottom + 4;
+  if (left + 264 > window.innerWidth  - 8) left = window.innerWidth  - 272;
+  if (top  + 180 > window.innerHeight - 8) top  = rect.top - 184;
+  $('fmtPopup').style.left    = left + 'px';
+  $('fmtPopup').style.top     = top  + 'px';
+  $('fmtPopup').style.display = 'block';
+}
+
+function closeFmtPopup() {
+  $('fmtPopup').style.display = 'none';
+  fmtField = null; fmtAnchor = null;
+}
+
+function syncFmtPopup() {
+  const fmt = S.colFormats[fmtField];
+  const dec = fmt ? (fmt.decimals === null ? 'auto' : String(fmt.decimals)) : 'auto';
+  const ths = fmt ? (fmt.thousands ? 'on' : 'off') : 'off';
+  $('fmtDecPills').querySelectorAll('.fmt-pill').forEach(p =>
+    p.classList.toggle('active', p.dataset.dec === dec));
+  $('fmtThsPills').querySelectorAll('.fmt-pill').forEach(p =>
+    p.classList.toggle('active', p.dataset.ths === ths));
+}
+
+function applyColFmt(decVal, thsVal) {
+  const targets = (colSelSet.size > 1 && colSelSet.has(fmtField))
+    ? [...colSelSet]
+    : [fmtField];
+  const fmtObj = (decVal === 'auto' && !thsVal)
+    ? null
+    : { decimals: decVal === 'auto' ? null : parseInt(decVal), thousands: thsVal };
+  targets.forEach(f => {
+    if (fmtObj) S.colFormats[f] = fmtObj;
+    else delete S.colFormats[f];
+  });
+  syncFmtPopup();
+  renderVisibleRows();
+  renderPinnedRow();
+  if (spField === fmtField) refreshStatsPopup();
+}
+
+function currentFmtState() {
+  const fmt = S.colFormats[fmtField];
+  return {
+    dec: fmt ? (fmt.decimals === null ? 'auto' : String(fmt.decimals)) : 'auto',
+    ths: fmt ? fmt.thousands : false,
+  };
+}
+
+$('fmtDecPills').addEventListener('click', e => {
+  const p = e.target.closest('.fmt-pill');
+  if (!p || !p.dataset.dec) return;
+  const { ths } = currentFmtState();
+  applyColFmt(p.dataset.dec, ths);
+});
+$('fmtThsPills').addEventListener('click', e => {
+  const p = e.target.closest('.fmt-pill');
+  if (!p || !p.dataset.ths) return;
+  const { dec } = currentFmtState();
+  applyColFmt(dec, p.dataset.ths === 'on');
+});
+$('fmtResetBtn').addEventListener('click', () => {
+  const targets = (colSelSet.size > 1 && colSelSet.has(fmtField))
+    ? [...colSelSet]
+    : [fmtField];
+  targets.forEach(f => delete S.colFormats[f]);
+  syncFmtPopup();
+  renderVisibleRows();
+  renderPinnedRow();
+  if (spField === fmtField) refreshStatsPopup();
+});
+
+document.addEventListener('mousedown', e => {
+  if ($('fmtPopup').style.display !== 'none' &&
+      !$('fmtPopup').contains(e.target) &&
+      e.target !== fmtAnchor &&
+      !fmtAnchor?.contains(e.target)) {
+    closeFmtPopup();
+  }
+}, true);
+
+// ════════════════════════════════════════════════════════════════
 // Column filter dropdown
 // ════════════════════════════════════════════════════════════════
 const filterDropdown = $('filterDropdown');
@@ -1486,6 +2050,24 @@ const fdList         = $('fdList');
 const fdStatus       = $('fdStatus');
 let   fdField        = null;   // field whose dropdown is open
 let   fdAnchorBtn    = null;   // the filter icon button that opened it
+// Table cell ctrl-click pending selection
+let tableSelField  = null;
+let tableSelValues = new Set();
+
+function updateTselBar() {
+  const bar = $('tselBar');
+  const n   = tableSelValues.size;
+  if (!n) { bar.style.display = 'none'; return; }
+  bar.style.display = '';
+  $('tselInfo').textContent = tableSelField + ': ' + n + ' waarde' + (n === 1 ? '' : 'n') + ' geselecteerd';
+}
+
+function clearTableSel() {
+  tableSelField  = null;
+  tableSelValues = new Set();
+  document.querySelectorAll('td.td-selected').forEach(td => td.classList.remove('td-selected'));
+  $('tselBar').style.display = 'none';
+}
 
 function getUniqueValues(fname) {
   // Pre-populated in onParsed from symCounts — always a cache hit
@@ -1610,11 +2192,8 @@ function updateFdStatus(rendered, filtered, total) {
 }
 
 function refreshFilterIcon(fname) {
-  headersRow.querySelectorAll('.th-filter-btn').forEach((btn, i) => {
-    if (S.visibleFields[i] === fname) {
-      btn.classList.toggle('active', !!S.colFilters[fname]);
-    }
-  });
+  const th = headersRow.querySelector(`th[data-fname="${fname}"]`);
+  if (th) th.classList.toggle('col-filtered', !!S.colFilters[fname]);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1717,14 +2296,6 @@ fdSelectAll.addEventListener('change', () => {
 // Search inside dropdown
 fdSearch.addEventListener('input', () => populateDropdownList(fdSearch.value));
 
-// Clear filter button
-$('fdClearBtn').addEventListener('click', () => {
-  delete S.colFilters[fdField];
-  populateDropdownList(fdSearch.value);
-  refreshFilterIcon(fdField);
-  applyFilters();
-});
-
 // Close on outside click
 document.addEventListener('mousedown', e => {
   if (filterDropdown.style.display !== 'none' &&
@@ -1734,6 +2305,16 @@ document.addEventListener('mousedown', e => {
     closeFilterDropdown();
   }
 }, true);
+
+// Table selection bar buttons
+$('tselApplyBtn').addEventListener('click', () => {
+  if (!tableSelField || !tableSelValues.size) return;
+  S.colFilters[tableSelField] = new Set(tableSelValues);
+  refreshFilterIcon(tableSelField);
+  clearTableSel();
+  applyFilters();
+});
+$('tselClearBtn').addEventListener('click', () => clearTableSel());
 
 // ════════════════════════════════════════════════════════════════
 // Column chooser
@@ -1781,23 +2362,63 @@ function renderChooserList(query) {
   });
 }
 
+function closeChooser() {
+  colChooser.classList.remove('open');
+  btnColumns.classList.remove('active');
+}
+
+function updateChooserActionLabels() {
+  const q = chooserSearch.value.trim();
+  $('chooserSelectAll').textContent = q ? 'Select results' : 'Select all';
+  $('chooserClearAll').textContent  = q ? 'Clear results'  : 'Clear all';
+}
+
 btnColumns.addEventListener('click', () => {
   colChooser.classList.toggle('open');
   btnColumns.classList.toggle('active');
 });
-$('chooserClose').addEventListener('click', () => {
-  colChooser.classList.remove('open');
-  btnColumns.classList.remove('active');
+$('chooserClose').addEventListener('click', closeChooser);
+
+document.addEventListener('mousedown', e => {
+  if (colChooser.classList.contains('open') &&
+      !colChooser.contains(e.target) &&
+      !btnColumns.contains(e.target)) {
+    closeChooser();
+  }
+}, true);
+
+chooserSearch.addEventListener('input', () => {
+  renderChooserList(chooserSearch.value);
+  updateChooserActionLabels();
 });
-chooserSearch.addEventListener('input', () => renderChooserList(chooserSearch.value));
 
 $('chooserSelectAll').addEventListener('click', () => {
-  S.visibleFields = S.fields.map(f => f.name);
+  const q = chooserSearch.value.trim().toLowerCase();
+  if (q) {
+    const allNames = S.fields.map(f => f.name);
+    S.fields.filter(f => f.name.toLowerCase().includes(q)).forEach(f => {
+      if (S.visibleFields.includes(f.name)) return;
+      const idx = allNames.indexOf(f.name);
+      let insertAt = S.visibleFields.length;
+      for (let i = 0; i < S.visibleFields.length; i++) {
+        if (allNames.indexOf(S.visibleFields[i]) > idx) { insertAt = i; break; }
+      }
+      S.visibleFields.splice(insertAt, 0, f.name);
+    });
+  } else {
+    S.visibleFields = S.fields.map(f => f.name);
+  }
   renderChooserList(chooserSearch.value);
   updateKpis(); applyFilters();
 });
 $('chooserClearAll').addEventListener('click', () => {
-  S.visibleFields = [];
+  const q = chooserSearch.value.trim().toLowerCase();
+  if (q) {
+    const matched = new Set(S.fields.filter(f => f.name.toLowerCase().includes(q)).map(f => f.name));
+    S.visibleFields = S.visibleFields.filter(n => !matched.has(n));
+  } else {
+    S.visibleFields = [];
+  }
   renderChooserList(chooserSearch.value);
   updateKpis(); applyFilters();
 });
@@ -1818,35 +2439,324 @@ globalSearch.addEventListener('input', e => {
 // ════════════════════════════════════════════════════════════════
 // Dark mode
 // ════════════════════════════════════════════════════════════════
-btnDark.addEventListener('click', () => {
-  const isDark = document.body.classList.toggle('dark');
-  btnDark.textContent = isDark ? '☀ Light' : '🌙 Dark';
+
+// ════════════════════════════════════════════════════════════════
+// Export modal
+// ════════════════════════════════════════════════════════════════
+const EX = {
+  format:     'xlsx',   // 'xlsx'|'csv'|'txt'
+  delim:      'comma',  // 'comma'|'semi'|'tab'|'pipe'|'custom'
+  customDelim: '',
+  qualifier:  'dquote', // 'none'|'dquote'|'squote'
+  lineEnding: 'crlf',   // 'crlf'|'lf'
+  worker:     null,
+  running:    false,
+};
+
+function exDelimChar() {
+  const map = { comma: ',', semi: ';', tab: '\t', pipe: '|', custom: EX.customDelim || ',' };
+  return map[EX.delim] || ',';
+}
+function exQualChar() {
+  return { none: '', dquote: '"', squote: "'" }[EX.qualifier] ?? '"';
+}
+function exExt() {
+  return { xlsx: '.xlsx', csv: '.csv', txt: '.txt' }[EX.format] || '.xlsx';
+}
+
+function openExportModal() {
+  const rows = S.filteredIndices.length;
+  const cols = S.visibleFields.length;
+  $('exportSubtitle').textContent = 'Exporting ' + rows.toLocaleString() + ' rows, ' + cols + ' columns';
+  $('exportFilename').value = S.sourceFilename || 'export';
+  syncExportUI();
+  $('exportOverlay').style.display = 'flex';
+}
+
+function closeExportModal() {
+  if (EX.worker) { EX.worker.terminate(); EX.worker = null; }
+  EX.running = false;
+  $('exportGo').disabled = false;
+  $('exportProgressText').style.display = 'none';
+  $('exportOverlay').style.display = 'none';
+}
+
+function syncExportUI() {
+  const isCsvTxt = EX.format !== 'xlsx';
+  $('exportCsvOpts').style.display  = isCsvTxt ? '' : 'none';
+  $('exportExt').textContent        = exExt();
+  $('exportCustomDelim').style.display = EX.delim === 'custom' ? 'inline-block' : 'none';
+
+  $('exportFmtPills').querySelectorAll('.export-pill').forEach(p =>
+    p.classList.toggle('active', p.dataset.fmt === EX.format));
+  $('exportDelimPills').querySelectorAll('.export-pill').forEach(p =>
+    p.classList.toggle('active', p.dataset.delim === EX.delim));
+  $('exportQualPills').querySelectorAll('.export-pill').forEach(p =>
+    p.classList.toggle('active', p.dataset.qual === EX.qualifier));
+  $('exportLePills').querySelectorAll('.export-pill').forEach(p =>
+    p.classList.toggle('active', p.dataset.le === EX.lineEnding));
+}
+
+function startExport() {
+  if (EX.running) return;
+  EX.running = true;
+  $('exportGo').disabled = true;
+
+  const filename = ($('exportFilename').value.trim() || 'export') + exExt();
+  const rows   = S.filteredIndices;
+  const vf     = S.visibleFields;
+  const vfIdx  = vf.map(n => S.fieldIndex[n]);
+  const prog   = $('exportProgressText');
+  prog.style.display = 'inline';
+  prog.textContent   = 'Preparing export…';
+
+  if (EX.format === 'xlsx') {
+    doXlsxExport(filename, rows, vf, vfIdx, prog);
+  } else {
+    doCsvTxtExport(filename, rows, vf, vfIdx, prog);
+  }
+}
+
+function finishExport() {
+  EX.running = false;
+  EX.worker  = null;
+  closeExportModal();
+}
+
+function doXlsxExport(filename, rows, vf, vfIdx, prog) {
+  if (typeof XLSX === 'undefined') {
+    alert('XLSX export requires an internet connection to load SheetJS. Please check your connection and try again.');
+    finishExport();
+    return;
+  }
+
+  const includeHeader = $('exportHeader').checked;
+  const aoa = [];
+  if (includeHeader) aoa.push(vf.slice());
+
+  const CHUNK = 5000;
+  let pos = 0;
+
+  function buildChunk() {
+    const end = Math.min(pos + CHUNK, rows.length);
+    for (let i = pos; i < end; i++) {
+      const rowIdx = rows[i];
+      const row = new Array(vfIdx.length);
+      for (let j = 0; j < vfIdx.length; j++) {
+        const fi  = vfIdx[j];
+        const val = getVal(rowIdx, fi);
+        if (val === '' || val == null) { row[j] = ''; continue; }
+        if (S.fields[fi] && S.fields[fi].numeric) {
+          const n = +val;
+          row[j] = isNaN(n) ? String(val) : n;
+        } else {
+          row[j] = String(val);
+        }
+      }
+      aoa.push(row);
+    }
+    pos = end;
+    prog.textContent = 'Building data: ' + pos.toLocaleString() + ' / ' + rows.length.toLocaleString() + ' rows…';
+
+    if (pos < rows.length) {
+      setTimeout(buildChunk, 0);
+    } else {
+      prog.textContent = 'Writing XLSX…';
+      setTimeout(() => {
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        ws['!cols'] = vf.map((_, ci) => {
+          let max = vf[ci].length;
+          for (let r = 0; r < aoa.length; r++) {
+            const v = aoa[r][ci];
+            const l = v == null ? 0 : String(v).length;
+            if (l > max) max = l;
+          }
+          return { wch: Math.min(50, Math.max(8, max + 2)) };
+        });
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+        XLSX.writeFile(wb, filename);
+        finishExport();
+      }, 16);
+    }
+  }
+
+  buildChunk();
+}
+
+function doCsvTxtExport(filename, rows, vf, vfIdx, prog) {
+  const includeHeader = $('exportHeader').checked;
+  const delimiter  = exDelimChar();
+  const qualifier  = exQualChar();
+  const lineEnding = EX.lineEnding === 'crlf' ? '\r\n' : '\n';
+
+  const colData     = vfIdx.map(fi => ({
+    symbols: S.symbols[fi].slice(),
+    indices: S.colIndices[fi].slice(),
+  }));
+  const fieldNumeric = vfIdx.map(fi => !!(S.fields[fi] && S.fields[fi].numeric));
+  const filtIndices  = new Int32Array(rows);
+
+  const blob = new Blob([EXPORT_WORKER_SRC], { type: 'application/javascript' });
+  const url  = URL.createObjectURL(blob);
+  EX.worker  = new Worker(url);
+  URL.revokeObjectURL(url);
+
+  EX.worker.onmessage = e => {
+    const d = e.data;
+    if (d.type === 'progress') {
+      prog.textContent = 'Processing ' + d.processed.toLocaleString() + ' / ' + d.total.toLocaleString() + ' rows…';
+    } else if (d.type === 'done') {
+      EX.worker = null;
+      const mime  = EX.format === 'csv' ? 'text/csv;charset=utf-8;' : 'text/plain;charset=utf-8;';
+      const fBlob = new Blob([d.content], { type: mime });
+      const a = document.createElement('a');
+      a.href     = URL.createObjectURL(fBlob);
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      finishExport();
+    }
+  };
+  EX.worker.onerror = err => {
+    EX.worker = null;
+    alert('Export error: ' + err.message);
+    finishExport();
+  };
+
+  const transfers = [filtIndices.buffer, ...colData.map(c => c.indices.buffer)];
+  EX.worker.postMessage({
+    colData, filteredIndices: filtIndices, fieldNames: vf, fieldNumeric,
+    options: { delimiter, qualifier, lineEnding, includeHeader },
+  }, transfers);
+}
+
+// Export modal event wiring
+btnExport.addEventListener('click', () => { if (S.fields.length) openExportModal(); });
+$('exportClose').addEventListener('click', closeExportModal);
+$('exportCancel').addEventListener('click', closeExportModal);
+$('exportGo').addEventListener('click', startExport);
+$('exportOverlay').addEventListener('mousedown', e => {
+  if (e.target === $('exportOverlay')) closeExportModal();
+});
+$('exportFmtPills').addEventListener('click', e => {
+  const p = e.target.closest('.export-pill');
+  if (p && p.dataset.fmt) { EX.format = p.dataset.fmt; syncExportUI(); }
+});
+$('exportDelimPills').addEventListener('click', e => {
+  const p = e.target.closest('.export-pill');
+  if (p && p.dataset.delim) { EX.delim = p.dataset.delim; syncExportUI(); }
+});
+$('exportQualPills').addEventListener('click', e => {
+  const p = e.target.closest('.export-pill');
+  if (p && p.dataset.qual) { EX.qualifier = p.dataset.qual; syncExportUI(); }
+});
+$('exportLePills').addEventListener('click', e => {
+  const p = e.target.closest('.export-pill');
+  if (p && p.dataset.le) { EX.lineEnding = p.dataset.le; syncExportUI(); }
+});
+$('exportCustomDelim').addEventListener('input', e => { EX.customDelim = e.target.value; });
+
+// ════════════════════════════════════════════════════════════════
+// Column header multi-select (for bulk formatting)
+// ════════════════════════════════════════════════════════════════
+let colSelSet = new Set();
+
+function clearColSel() {
+  colSelSet.clear();
+  headersRow.querySelectorAll('th.th-col-selected').forEach(t => t.classList.remove('th-col-selected'));
+}
+
+tbody.addEventListener('click', e => {
+  if (!e.ctrlKey && colSelSet.size) clearColSel();
 });
 
 // ════════════════════════════════════════════════════════════════
-// CSV export (visible/filtered rows, visible columns)
+// Column header context menu
 // ════════════════════════════════════════════════════════════════
-function csvEscape(v) {
-  const s = v == null ? '' : String(v);
-  return (s.includes(',') || s.includes('"') || s.includes('\n'))
-    ? '"' + s.replace(/"/g, '""') + '"'
-    : s;
+let ctxField = null;
+let ctxTh    = null;
+
+function openColCtxMenu(fname, th, x, y) {
+  closeColCtxMenu();
+  closeFilterDropdown();
+  closeStatsPopup();
+  closeFmtPopup();
+
+  ctxField = fname;
+  ctxTh    = th;
+
+  const isNum = !!(S.fields.find(f => f.name === fname)?.numeric);
+  const menu  = $('colCtxMenu');
+
+  menu.querySelectorAll('.ctx-num-only').forEach(el =>
+    el.style.display = isNum ? '' : 'none');
+
+  $('ctxSortAsc').classList.toggle('ctx-active',
+    S.sortField === fname && S.sortDir === 1);
+  $('ctxSortDesc').classList.toggle('ctx-active',
+    S.sortField === fname && S.sortDir === -1);
+  $('ctxSortClear').style.display =
+    (S.sortField === fname && S.sortDir !== 0) ? '' : 'none';
+  $('ctxFilter').classList.toggle('ctx-active', !!S.colFilters[fname]);
+
+  let left = x, top = y;
+  if (left + 184 > window.innerWidth  - 8) left = window.innerWidth  - 192;
+  if (top  + 220 > window.innerHeight - 8) top  = window.innerHeight - 228;
+
+  menu.style.left    = left + 'px';
+  menu.style.top     = top  + 'px';
+  menu.style.display = 'block';
 }
 
-btnExport.addEventListener('click', () => {
-  const vf    = S.visibleFields;
-  const vfIdx = vf.map(fname => S.fieldIndex[fname]);
-  const idxs  = S.filteredIndices;
-  let csv = vf.map(csvEscape).join(',') + '\n';
-  for (let i = 0; i < idxs.length; i++) {
-    const rowIdx = idxs[i];
-    csv += vfIdx.map(fi => csvEscape(getVal(rowIdx, fi))).join(',') + '\n';
+function closeColCtxMenu() {
+  $('colCtxMenu').style.display = 'none';
+  ctxField = null;
+  ctxTh    = null;
+}
+
+$('ctxSortAsc').addEventListener('click', () => {
+  const f = ctxField;
+  closeColCtxMenu();
+  S.sortField = f; S.sortDir = 1;
+  applyFilters();
+});
+$('ctxSortDesc').addEventListener('click', () => {
+  const f = ctxField;
+  closeColCtxMenu();
+  S.sortField = f; S.sortDir = -1;
+  applyFilters();
+});
+$('ctxSortClear').addEventListener('click', () => {
+  closeColCtxMenu();
+  S.sortField = null; S.sortDir = 0;
+  applyFilters();
+});
+$('ctxFilter').addEventListener('click', () => {
+  const f = ctxField, t = ctxTh;
+  closeColCtxMenu();
+  openFilterDropdown(f, t);
+});
+$('ctxStats').addEventListener('click', () => {
+  const f = ctxField, t = ctxTh;
+  closeColCtxMenu();
+  openStatsPopup(f, t);
+});
+$('ctxFormat').addEventListener('click', () => {
+  const f = ctxField, t = ctxTh;
+  closeColCtxMenu();
+  openFmtPopup(f, t);
+});
+
+// Close on outside click or Escape
+document.addEventListener('mousedown', e => {
+  if ($('colCtxMenu').style.display !== 'none' &&
+      !$('colCtxMenu').contains(e.target)) {
+    closeColCtxMenu();
   }
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
-  link.download = 'qvd-export.csv';
-  link.click();
-  URL.revokeObjectURL(link.href);
+}, true);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeColCtxMenu();
 });
 
 // ════════════════════════════════════════════════════════════════
