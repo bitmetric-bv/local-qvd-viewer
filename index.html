@@ -696,7 +696,7 @@
 
   <div class="sidebar-footer">
     <a href="https://github.com/bitmetric-bv/local-qvd-viewer" target="_blank" rel="noopener">github.com/bitmetric-bv/local-qvd-viewer</a>
-    <div class="footer-date">Last updated: Apr 24, 2026 11:25</div>
+    <div class="footer-date" id="footerDate">Last updated: …</div>
   </div>
 </div>
 
@@ -968,13 +968,16 @@ function parseQvd(buffer) {
 
   var noOfRecords    = tagNum(xmlStr, 'NoOfRecords');
   var recordByteSize = tagNum(xmlStr, 'RecordByteSize');
-  var createdUtc = tagVal(xmlStr, 'CreatedUtcTime')
-    || (function() {
-         var d = tagVal(xmlStr, 'CreateUtcDate');
-         var t = tagVal(xmlStr, 'CreateUtcTime');
-         return d ? (t ? d + 'T' + t : d) : '';
-       })()
-    || '';
+  var createdUtc = (function() {
+    var v = tagVal(xmlStr, 'CreatedUtcTime')
+         || tagVal(xmlStr, 'CreateUtcTime')
+         || (function() {
+              var d = tagVal(xmlStr, 'CreateUtcDate');
+              var t = tagVal(xmlStr, 'CreateUtcTime');
+              return d ? (t ? d + ' ' + t : d) : '';
+            })();
+    return v.replace(' ', 'T'); // normalise "YYYY-MM-DD HH:MM:SS" → ISO 8601
+  })();
 
   // Split on <QvdFieldHeader> blocks
   var fieldBlocks = [];
@@ -1244,6 +1247,16 @@ dropZone.addEventListener('drop', e => {
   e.preventDefault(); dropZone.classList.remove('dragover');
   if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
 });
+
+// Prevent browser from opening the file when dropped outside the drop zone
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  if (e.target === dropZone || dropZone.contains(e.target)) return; // already handled above
+  const file = e.dataTransfer.files[0];
+  if (file) loadFile(file);
+});
+
 fileInput.addEventListener('change', e => { if (e.target.files[0]) loadFile(e.target.files[0]); });
 
 function loadFile(file) {
@@ -2775,6 +2788,24 @@ function showProgress(visible, label, pct) {
 window.addEventListener('resize', () => {
   if (S.filteredIndices.length) renderVisibleRows();
 });
+
+// Fetch last-updated date from GitHub
+(async () => {
+  const el = $('footerDate');
+  try {
+    const res  = await fetch('https://api.github.com/repos/bitmetric-bv/local-qvd-viewer/commits?path=index.html&per_page=1');
+    const data = await res.json();
+    const iso  = data?.[0]?.commit?.committer?.date;
+    if (iso) {
+      const d = new Date(iso);
+      el.textContent = 'Last updated: ' + d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    } else {
+      el.textContent = '';
+    }
+  } catch {
+    el.textContent = '';
+  }
+})();
 </script>
 </body>
 </html>
