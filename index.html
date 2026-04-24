@@ -351,6 +351,45 @@
     body.dark .chooser-item label { color: #ccc; }
     body.dark .resize-handle:hover { background: rgba(255,255,255,0.15); }
 
+    /* ── Active-filter bar ── */
+    .filter-bar {
+      display: none; align-items: center; flex-wrap: wrap; gap: 6px;
+      padding: 6px 20px; background: #fff8f0; border-bottom: 1px solid #e8d0a0;
+      flex-shrink: 0;
+    }
+    .filter-bar.visible { display: flex; }
+    .filter-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 4px 3px 9px; border-radius: 12px; cursor: pointer;
+      background: #ffecd4; border: 1px solid #d4a060; color: #7a3e00;
+      font-size: 12px; max-width: 280px;
+    }
+    .filter-chip:hover { background: #ffd8a8; border-color: #b07030; }
+    .filter-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .filter-chip-name { font-weight: 600; }
+    .filter-chip-val { color: #a05010; margin-left: 2px; }
+    .filter-chip-remove {
+      flex-shrink: 0; width: 18px; height: 18px; border-radius: 50%;
+      border: none; background: transparent; cursor: pointer;
+      color: #a05010; font-size: 14px; line-height: 1; padding: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .filter-chip-remove:hover { background: #f0b060; color: #5a2000; }
+    .filter-bar-clear {
+      font-size: 11px; color: #a05010; cursor: pointer;
+      padding: 3px 9px; border: 1px solid #d4a060; border-radius: 4px;
+      background: white; white-space: nowrap; margin-left: 2px;
+    }
+    .filter-bar-clear:hover { background: #fff0e0; border-color: #b07030; }
+    body.dark .filter-bar { background: #1a130a; border-color: #3a2808; }
+    body.dark .filter-chip { background: #2a1a06; border-color: #6a400a; color: #e0a040; }
+    body.dark .filter-chip:hover { background: #3a2510; border-color: #9a5a10; }
+    body.dark .filter-chip-val { color: #c07820; }
+    body.dark .filter-chip-remove { color: #c07820; }
+    body.dark .filter-chip-remove:hover { background: #503010; color: #ffd080; }
+    body.dark .filter-bar-clear { background: #1a130a; border-color: #6a400a; color: #c07820; }
+    body.dark .filter-bar-clear:hover { background: #2a1a06; }
+
     /* ── Stats info button ── */
     .th-stats-btn {
       flex-shrink: 0; padding: 2px 3px; border: none; background: none;
@@ -492,6 +531,9 @@
     <button class="btn btn-outline" id="btnDark">🌙 Dark</button>
     <button class="btn btn-dark" id="btnExport" disabled>⬇ Export CSV</button>
   </div>
+
+  <!-- Active filter bar -->
+  <div class="filter-bar" id="filterBar"></div>
 
   <!-- Table -->
   <div class="table-wrap" id="tableWrap">
@@ -968,6 +1010,8 @@ function buildRank(sfi) {
 function applyFilters() {
   // Cancel any in-progress async filter
   if (filterJob) { filterJob.cancelled = true; filterJob = null; }
+
+  renderFilterBar();
 
   const gs           = S.globalSearch.toLowerCase();
   const vf           = S.visibleFields;
@@ -1566,12 +1610,83 @@ function updateFdStatus(rendered, filtered, total) {
 }
 
 function refreshFilterIcon(fname) {
-  // Update the active class on the filter icon button in the header
   headersRow.querySelectorAll('.th-filter-btn').forEach((btn, i) => {
     if (S.visibleFields[i] === fname) {
       btn.classList.toggle('active', !!S.colFilters[fname]);
     }
   });
+}
+
+// ════════════════════════════════════════════════════════════════
+// Active-filter bar
+// ════════════════════════════════════════════════════════════════
+const filterBar = $('filterBar');
+
+function renderFilterBar() {
+  const activeFields = Object.keys(S.colFilters).filter(f => S.colFilters[f]);
+  filterBar.classList.toggle('visible', activeFields.length > 0);
+  if (!activeFields.length) { filterBar.innerHTML = ''; return; }
+
+  filterBar.innerHTML = '';
+
+  activeFields.forEach(fname => {
+    const sel     = S.colFilters[fname];
+    const entries = getUniqueValues(fname);
+    const total   = entries.length;
+    const count   = sel.size;
+
+    let valText;
+    if (count === 1) {
+      const v = [...sel][0];
+      valText = v === '' ? '(leeg)' : v;
+    } else if (count <= 3) {
+      valText = [...sel].map(v => v === '' ? '(leeg)' : v).join(', ');
+    } else {
+      valText = count + ' van ' + total + ' waarden';
+    }
+
+    const chip = document.createElement('div');
+    chip.className = 'filter-chip';
+    chip.title = 'Klik om filter aan te passen';
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'filter-chip-label';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'filter-chip-name';
+    nameSpan.textContent = fname;
+    const valSpan = document.createElement('span');
+    valSpan.className = 'filter-chip-val';
+    valSpan.textContent = ': ' + valText;
+    labelEl.appendChild(nameSpan);
+    labelEl.appendChild(valSpan);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'filter-chip-remove';
+    removeBtn.title = 'Filter verwijderen';
+    removeBtn.textContent = '×';
+    removeBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      delete S.colFilters[fname];
+      refreshFilterIcon(fname);
+      applyFilters();
+    });
+
+    chip.appendChild(labelEl);
+    chip.appendChild(removeBtn);
+    chip.addEventListener('click', () => openFilterDropdown(fname, chip));
+    filterBar.appendChild(chip);
+  });
+
+  const clearBtn = document.createElement('button');
+  clearBtn.className = 'filter-bar-clear';
+  clearBtn.textContent = 'Alle filters wissen';
+  clearBtn.addEventListener('click', () => {
+    const fields = Object.keys(S.colFilters).filter(f => S.colFilters[f]);
+    fields.forEach(f => delete S.colFilters[f]);
+    fields.forEach(f => refreshFilterIcon(f));
+    applyFilters();
+  });
+  filterBar.appendChild(clearBtn);
 }
 
 // "Select all" checkbox in dropdown
