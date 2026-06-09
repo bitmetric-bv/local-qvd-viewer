@@ -730,6 +730,7 @@
   <div class="toolbar">
     <input class="search-global" id="globalSearch" type="text" placeholder="Search in all fields…" disabled>
     <button class="btn btn-outline" id="btnColumns" disabled>Columns</button>
+    <button class="btn btn-outline" id="btnRefresh" disabled title="Herlaad het bronbestand">↺ Refresh</button>
 <button class="btn btn-dark" id="btnExport" disabled>⬇ Export</button>
   </div>
 
@@ -1228,6 +1229,7 @@ const kpiColumns     = $('kpiColumns');
 const kpiFields      = $('kpiFields');
 const globalSearch   = $('globalSearch');
 const btnColumns     = $('btnColumns');
+const btnRefresh     = $('btnRefresh');
 const btnExport      = $('btnExport');
 const tableWrap      = $('tableWrap');
 const placeholder    = $('placeholder');
@@ -1264,6 +1266,7 @@ fileInput.addEventListener('change', e => { if (e.target.files[0]) loadFile(e.ta
 
 function loadFile(file) {
   if (!file.name.match(/\.qvd$/i)) { alert('Please select a .qvd file.'); return; }
+  lastLoadedFile = file;
 
   S.sourceFilename = file.name.replace(/\.qvd$/i, '');
   fileNameDisp.textContent = file.name;
@@ -1371,10 +1374,11 @@ function onParsed(symbols, colIndices, symCounts, fields, meta) {
   $('metaFields').textContent  = meta.noOfFields.toLocaleString();
   $('metaRows').textContent    = meta.noOfRecords.toLocaleString();
   if (meta.createdUtc) {
-    const d = new Date(meta.createdUtc);
+    const utc = meta.createdUtc.endsWith('Z') ? meta.createdUtc : meta.createdUtc + 'Z';
+    const d   = new Date(utc);
     $('metaCreated').textContent = isNaN(d)
       ? meta.createdUtc
-      : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+      : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short', hour12: false });
   } else {
     $('metaCreated').textContent = '—';
   }
@@ -1387,7 +1391,37 @@ function onParsed(symbols, colIndices, symCounts, fields, meta) {
   kpiTotal.classList.remove('muted');
 
   setEnabled(true);
-  globalSearch.value = '';
+
+  if (pendingRefreshState) {
+    const r       = pendingRefreshState;
+    pendingRefreshState = null;
+    const exists  = new Set(fields.map(f => f.name));
+
+    S.visibleFields = r.visibleFields.filter(n => exists.has(n));
+    if (!S.visibleFields.length) S.visibleFields = fields.slice(0, 20).map(f => f.name);
+
+    S.colFilters = {};
+    for (const [fn, vals] of Object.entries(r.colFilters)) {
+      if (exists.has(fn)) S.colFilters[fn] = new Set(vals);
+    }
+
+    if (r.sortField && exists.has(r.sortField)) {
+      S.sortField = r.sortField;
+      S.sortDir   = r.sortDir;
+    }
+
+    S.globalSearch     = r.globalSearch;
+    globalSearch.value = r.globalSearch;
+
+    S.pinnedAgg  = Object.fromEntries(Object.entries(r.pinnedAgg).filter(([k]) => exists.has(k)));
+    S.colFormats = Object.fromEntries(Object.entries(r.colFormats).filter(([k]) => exists.has(k)));
+    for (const [k, v] of Object.entries(r.colWidths)) {
+      if (exists.has(k)) S.colWidths[k] = v;
+    }
+  } else {
+    globalSearch.value = '';
+  }
+
   applyFilters();
   buildChooser();
 }
@@ -1395,6 +1429,7 @@ function onParsed(symbols, colIndices, symCounts, fields, meta) {
 function setEnabled(on) {
   globalSearch.disabled = !on;
   btnColumns.disabled   = !on;
+  btnRefresh.disabled   = !on;
   btnExport.disabled    = !on;
 }
 
@@ -2077,6 +2112,9 @@ let   fdAnchorBtn    = null;   // the filter icon button that opened it
 let tableSelField  = null;
 let tableSelValues = new Set();
 
+let lastLoadedFile     = null;
+let pendingRefreshState = null;
+
 function updateTselBar() {
   const bar = $('tselBar');
   const n   = tableSelValues.size;
@@ -2395,6 +2433,21 @@ function updateChooserActionLabels() {
   $('chooserSelectAll').textContent = q ? 'Select results' : 'Select all';
   $('chooserClearAll').textContent  = q ? 'Clear results'  : 'Clear all';
 }
+
+btnRefresh.addEventListener('click', () => {
+  if (!lastLoadedFile) return;
+  pendingRefreshState = {
+    colFilters:    Object.fromEntries(Object.entries(S.colFilters).map(([k, v]) => [k, new Set(v)])),
+    sortField:     S.sortField,
+    sortDir:       S.sortDir,
+    visibleFields: [...S.visibleFields],
+    globalSearch:  S.globalSearch,
+    pinnedAgg:     { ...S.pinnedAgg },
+    colFormats:    { ...S.colFormats },
+    colWidths:     { ...S.colWidths },
+  };
+  loadFile(lastLoadedFile);
+});
 
 btnColumns.addEventListener('click', () => {
   colChooser.classList.toggle('open');
