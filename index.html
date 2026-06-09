@@ -270,6 +270,9 @@
     tr.virt-spacer td { padding: 0; border: none; background: transparent !important; }
     td.td-selected { background: #e8f0fe !important; cursor: pointer; }
     body.dark td.td-selected { background: #1a2535 !important; }
+    td { cursor: pointer; }
+    td.td-copied { background: #d4edda !important; transition: background 0s; }
+    body.dark td.td-copied { background: #1a3d2b !important; }
 
     /* Table selection bar */
     .tsel-bar {
@@ -1676,7 +1679,14 @@ function buildRow(rowIdx, vf, vfIdx) {
     td.textContent = formatCell(val, fi);
 
     td.addEventListener('click', e => {
-      if (!e.ctrlKey) return;
+      if (!e.ctrlKey) {
+        const copyVal = val == null ? '' : String(val);
+        navigator.clipboard.writeText(copyVal).then(() => {
+          td.classList.add('td-copied');
+          setTimeout(() => td.classList.remove('td-copied'), 600);
+        });
+        return;
+      }
       e.preventDefault();
       if (tableSelField !== fname) {
         clearTableSel();
